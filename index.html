@@ -42,7 +42,7 @@
             <div class="search-grid">
                 <div class="field">
                     <label for="from-input">תחנת מוצא</label>
-                    <input id="from-input" list="stations-list" placeholder="הקלד שם תחנה" autocomplete="off">
+                    <input id="from-input" placeholder="הקלד שם תחנה" autocomplete="off">
                 </div>
 
                 <div class="swap-wrap">
@@ -53,7 +53,7 @@
 
                 <div class="field">
                     <label for="to-input">תחנת יעד</label>
-                    <input id="to-input" list="stations-list" placeholder="הקלד שם תחנה" autocomplete="off">
+                    <input id="to-input" placeholder="הקלד שם תחנה" autocomplete="off">
                 </div>
 
                 <div class="field small">
@@ -78,7 +78,6 @@
                 </div>
             </div>
 
-            <datalist id="stations-list"></datalist>
             <p id="search-hint" class="hint">טוען תחנות...</p>
         </section>
 
@@ -100,7 +99,7 @@
             <div class="board-controls">
                 <div class="field">
                     <label for="board-station-input">תחנה</label>
-                    <input id="board-station-input" list="stations-list" placeholder="הקלד שם תחנה" autocomplete="off">
+                    <input id="board-station-input" placeholder="הקלד שם תחנה" autocomplete="off">
                 </div>
                 <div class="field small">
                     <label for="board-window">טווח</label>
@@ -128,6 +127,8 @@
             Created by Itamar Yehuda
         </footer>
     </main>
+    
+    <div id="station-suggestions" class="station-suggestions" hidden></div>
 
     <script>
         let stations = [];
@@ -135,6 +136,7 @@
         let boardRowsRaw = [];
         let boardStationCurrent = null;
         let activeRequests = 0;
+        let activeSuggestionInput = null;
 
         function stationLabel(station) {
             if (station.heb && station.eng) return `${station.heb} | ${station.eng} (${station.id})`;
@@ -273,15 +275,10 @@
             try {
                 stations = await fetchJson('/api/stations');
                 stationsByLabel = new Map();
-                const list = document.getElementById('stations-list');
-                list.innerHTML = '';
 
                 stations.forEach(station => {
                     const label = stationLabel(station);
                     stationsByLabel.set(label, station);
-                    const option = document.createElement('option');
-                    option.value = label;
-                    list.appendChild(option);
                 });
 
                 hint.textContent = `נטענו ${stations.length} תחנות.`;
@@ -289,6 +286,80 @@
                 console.error(error);
                 hint.textContent = 'שגיאה בטעינת תחנות. רענן את הדף.';
             }
+        }
+
+        function filteredStations(query) {
+            const q = (query || '').trim().toLowerCase();
+            const mobile = window.matchMedia('(max-width: 768px)').matches;
+            const limit = mobile ? 5 : 18;
+            if (!q) return stations.slice(0, mobile ? 4 : 12);
+            return stations.filter(s => {
+                const name = String(s.name || '').toLowerCase();
+                const heb = String(s.heb || '').toLowerCase();
+                const eng = String(s.eng || '').toLowerCase();
+                const id = String(s.id || '');
+                return name.includes(q) || heb.includes(q) || eng.includes(q) || id.includes(q);
+            }).slice(0, limit);
+        }
+
+        function hideSuggestions() {
+            const box = document.getElementById('station-suggestions');
+            box.hidden = true;
+            box.innerHTML = '';
+            activeSuggestionInput = null;
+        }
+
+        function positionSuggestions(input) {
+            const box = document.getElementById('station-suggestions');
+            const mobile = window.matchMedia('(max-width: 768px)').matches;
+            if (mobile) {
+                const viewport = window.visualViewport;
+                const keyboard = viewport
+                    ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
+                    : 0;
+                box.classList.add('mobile');
+                box.style.left = '8px';
+                box.style.right = '8px';
+                box.style.top = 'auto';
+                box.style.width = 'auto';
+                box.style.bottom = `${keyboard + 8}px`;
+                return;
+            }
+
+            const rect = input.getBoundingClientRect();
+            box.classList.remove('mobile');
+            box.style.left = `${rect.left + window.scrollX}px`;
+            box.style.top = `${rect.bottom + window.scrollY + 6}px`;
+            box.style.bottom = 'auto';
+            box.style.right = 'auto';
+            box.style.width = `${rect.width}px`;
+        }
+
+        function showSuggestions(input) {
+            if (!stations.length) return;
+            const box = document.getElementById('station-suggestions');
+            const options = filteredStations(input.value);
+            if (!options.length) {
+                hideSuggestions();
+                return;
+            }
+
+            activeSuggestionInput = input;
+            box.innerHTML = options.map(s => {
+                const label = stationLabel(s);
+                return `<button type="button" class="station-option" data-station-label="${label.replace(/"/g, '&quot;')}">${label}</button>`;
+            }).join('');
+
+            positionSuggestions(input);
+            box.hidden = false;
+
+            box.querySelectorAll('.station-option').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    input.value = btn.dataset.stationLabel || '';
+                    hideSuggestions();
+                    input.dispatchEvent(new Event('change'));
+                });
+            });
         }
 
         function setResultsHeader(fromName, toName, count) {
@@ -546,6 +617,28 @@
         document.getElementById('board-station-input').addEventListener('keydown', (e) => {
             if (e.key === 'Enter') runStationRealtime();
         });
+
+        ['from-input', 'to-input', 'board-station-input'].forEach((id) => {
+            const input = document.getElementById(id);
+            input.addEventListener('focus', () => showSuggestions(input));
+            input.addEventListener('input', () => showSuggestions(input));
+            input.addEventListener('blur', () => setTimeout(hideSuggestions, 120));
+        });
+
+        document.addEventListener('scroll', () => {
+            if (activeSuggestionInput) positionSuggestions(activeSuggestionInput);
+        }, true);
+        window.addEventListener('resize', () => {
+            if (activeSuggestionInput) positionSuggestions(activeSuggestionInput);
+        });
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', () => {
+                if (activeSuggestionInput) positionSuggestions(activeSuggestionInput);
+            });
+            window.visualViewport.addEventListener('scroll', () => {
+                if (activeSuggestionInput) positionSuggestions(activeSuggestionInput);
+            });
+        }
 
         initDateTime();
         loadStations().then(() => {

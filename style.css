@@ -418,6 +418,45 @@ input:focus {
     padding: 18px;
 }
 
+.station-suggestions {
+    position: absolute;
+    z-index: 9500;
+    background: #ffffff;
+    border: 1px solid #d4e4f4;
+    border-radius: 12px;
+    box-shadow: 0 16px 30px rgba(8, 56, 98, 0.2);
+    overflow: auto;
+    max-height: min(48vh, 340px);
+}
+
+.station-suggestions.mobile {
+    position: fixed;
+    max-height: min(24vh, 210px);
+}
+
+.station-option {
+    width: 100%;
+    border: 0;
+    background: #fff;
+    color: var(--ink);
+    text-align: right;
+    padding: 9px 12px;
+    font-family: inherit;
+    font-size: 0.95rem;
+    cursor: pointer;
+    border-bottom: 1px solid #edf3fa;
+}
+
+.station-option:last-child {
+    border-bottom: 0;
+}
+
+.station-option:hover,
+.station-option:focus-visible {
+    background: #eef6ff;
+    outline: none;
+}
+
 .loading-overlay {
     position: static;
     display: none;
