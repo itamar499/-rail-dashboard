@@ -137,6 +137,7 @@
         let boardStationCurrent = null;
         let activeRequests = 0;
         let activeSuggestionInput = null;
+        const MIN_CHARS_FOR_SUGGESTIONS = 3;
 
         function stationLabel(station) {
             if (station.heb && station.eng) return `${station.heb} | ${station.eng} (${station.id})`;
@@ -291,7 +292,7 @@
         function filteredStations(query) {
             const q = (query || '').trim().toLowerCase();
             const mobile = window.matchMedia('(max-width: 768px)').matches;
-            const limit = mobile ? 5 : 18;
+            const limit = mobile ? 9999 : 18;
             if (!q) return stations.slice(0, mobile ? 4 : 12);
             return stations.filter(s => {
                 const name = String(s.name || '').toLowerCase();
@@ -314,15 +315,35 @@
             const mobile = window.matchMedia('(max-width: 768px)').matches;
             if (mobile) {
                 const viewport = window.visualViewport;
-                const keyboard = viewport
-                    ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
-                    : 0;
+                const viewportTop = viewport ? viewport.offsetTop : 0;
+                const viewportHeight = viewport ? viewport.height : window.innerHeight;
+                const viewportBottom = viewportTop + viewportHeight;
                 box.classList.add('mobile');
-                box.style.left = '8px';
-                box.style.right = '8px';
-                box.style.top = 'auto';
-                box.style.width = 'auto';
-                box.style.bottom = `${keyboard + 8}px`;
+                box.style.right = 'auto';
+                box.style.bottom = 'auto';
+
+                const rect = input.getBoundingClientRect();
+                const sidePadding = 8;
+                const gap = 2;
+                const maxHeight = Math.max(96, Math.min(170, Math.floor(viewportHeight * 0.30)));
+                const spaceBelow = viewportBottom - rect.bottom - gap - sidePadding;
+                const spaceAbove = rect.top - viewportTop - gap - sidePadding;
+
+                const dropWidth = Math.min(rect.width, window.innerWidth - (sidePadding * 2));
+                const left = Math.max(sidePadding, Math.min(rect.left, window.innerWidth - dropWidth - sidePadding));
+
+                box.style.left = `${left}px`;
+                box.style.width = `${dropWidth}px`;
+
+                if (spaceBelow >= 110 || spaceBelow >= spaceAbove) {
+                    const h = Math.max(96, Math.min(maxHeight, Math.floor(spaceBelow)));
+                    box.style.maxHeight = `${h}px`;
+                    box.style.top = `${Math.max(viewportTop + sidePadding, rect.bottom + gap)}px`;
+                } else {
+                    const h = Math.max(96, Math.min(maxHeight, Math.floor(spaceAbove)));
+                    box.style.maxHeight = `${h}px`;
+                    box.style.top = `${Math.max(viewportTop + sidePadding, rect.top - h - gap)}px`;
+                }
                 return;
             }
 
@@ -333,10 +354,16 @@
             box.style.bottom = 'auto';
             box.style.right = 'auto';
             box.style.width = `${rect.width}px`;
+            box.style.maxHeight = 'min(48vh, 340px)';
         }
 
         function showSuggestions(input) {
             if (!stations.length) return;
+            const value = (input.value || '').trim();
+            if (value.length < MIN_CHARS_FOR_SUGGESTIONS) {
+                hideSuggestions();
+                return;
+            }
             const box = document.getElementById('station-suggestions');
             const options = filteredStations(input.value);
             if (!options.length) {
@@ -620,7 +647,14 @@
 
         ['from-input', 'to-input', 'board-station-input'].forEach((id) => {
             const input = document.getElementById(id);
-            input.addEventListener('focus', () => showSuggestions(input));
+            input.addEventListener('focus', () => {
+                if (window.matchMedia('(max-width: 768px)').matches) {
+                    setTimeout(() => {
+                        input.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                    }, 80);
+                }
+                showSuggestions(input);
+            });
             input.addEventListener('input', () => showSuggestions(input));
             input.addEventListener('blur', () => setTimeout(hideSuggestions, 120));
         });
