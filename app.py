@@ -293,6 +293,11 @@ def css():
     return send_from_directory(".", "style.css")
 
 
+@app.route("/favicon.svg")
+def favicon():
+    return send_from_directory(".", "favicon.svg")
+
+
 @app.route("/api/stations")
 def get_stations():
     q = (request.args.get("q") or "").strip().lower()
