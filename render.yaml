@@ -1,0 +1,8 @@
+﻿services:
+  - type: web
+    name: rail-dashboard
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 8 --timeout 120
+    autoDeploy: true
