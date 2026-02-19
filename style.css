@@ -208,6 +208,15 @@ input:focus {
     padding: 16px;
 }
 
+.site-credit {
+    text-align: center;
+    color: #5f748b;
+    font-size: 0.86rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 2px 0 6px;
+}
+
 .results-header {
     display: flex;
     justify-content: space-between;
