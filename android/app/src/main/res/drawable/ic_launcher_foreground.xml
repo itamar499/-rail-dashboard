@@ -1,0 +1,54 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="22dp" />
+            <solid android:color="#FFFFFF" />
+            <size android:width="74dp" android:height="52dp" />
+        </shape>
+        <inset android:left="17dp" android:top="16dp" android:right="17dp" android:bottom="40dp" />
+    </item>
+
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="6dp" />
+            <solid android:color="#0B5EA7" />
+            <size android:width="18dp" android:height="12dp" />
+        </shape>
+        <inset android:left="26dp" android:top="24dp" android:right="64dp" android:bottom="72dp" />
+    </item>
+
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="6dp" />
+            <solid android:color="#0B5EA7" />
+            <size android:width="18dp" android:height="12dp" />
+        </shape>
+        <inset android:left="64dp" android:top="24dp" android:right="26dp" android:bottom="72dp" />
+    </item>
+
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="#FFFFFF" />
+            <size android:width="10dp" android:height="10dp" />
+        </shape>
+        <inset android:left="30dp" android:top="64dp" android:right="68dp" android:bottom="34dp" />
+    </item>
+
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="#FFFFFF" />
+            <size android:width="10dp" android:height="10dp" />
+        </shape>
+        <inset android:left="68dp" android:top="64dp" android:right="30dp" android:bottom="34dp" />
+    </item>
+
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="2dp" />
+            <solid android:color="#FFFFFF" />
+            <size android:width="58dp" android:height="4dp" />
+        </shape>
+        <inset android:left="25dp" android:top="78dp" android:right="25dp" android:bottom="26dp" />
+    </item>
+</layer-list>

@@ -2,3 +2,16 @@
 *.py[cod]
 .venv/
 .env
+
+node_modules/
+android/.gradle/
+android/build/
+android/app/build/
+*.apk
+*.aab
+
+android/release-signing.properties
+android/app/*.jks
+android/app/*.keystore
+
+android/keystore.properties
