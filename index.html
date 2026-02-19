@@ -28,17 +28,17 @@
             <p class="subtitle">בחר תחנת מוצא ויעד מתוך כל תחנות רכבת ישראל, וקבל את כל הנסיעות לתאריך והשעה שבחרת.</p>
         </header>
         
-        <div id="loading-overlay" class="loading-overlay" aria-hidden="true">
-            <div class="loading-card">
-                <div class="loading-title" id="loading-text">טוען נתונים...</div>
-                <div class="train-loader">
-                    <div class="train-track"></div>
-                    <div class="train-runner">🚆</div>
+        <section class="search-panel">
+            <div id="loading-overlay-search" class="loading-overlay" aria-hidden="true">
+                <div class="loading-card">
+                    <div class="loading-title" id="loading-text-search">טוען נתונים...</div>
+                    <div class="train-loader">
+                        <div class="train-track"></div>
+                        <div class="train-runner">🚆</div>
+                    </div>
                 </div>
             </div>
-        </div>
 
-        <section class="search-panel">
             <div class="search-grid">
                 <div class="field">
                     <label for="from-input">תחנת מוצא</label>
@@ -82,9 +82,9 @@
         </section>
 
         <section class="results-panel">
-            <div class="results-header">
+            <div id="results-header" class="results-header" style="display:none;">
                 <h2 id="results-title">תוצאות</h2>
-                <span id="results-count" class="badge">0 נסיעות</span>
+                <span id="results-count" class="badge">טרם בוצע חיפוש</span>
             </div>
             <div id="results-body" class="results-body">
                 <div class="empty-state">בחר תחנות ולחץ "חפש נסיעות"</div>
@@ -94,7 +94,16 @@
         <section class="results-panel">
             <div class="results-header">
                 <h2>זמן אמת בתחנה</h2>
-                <span id="board-count" class="badge">0 רכבות</span>
+                <span id="board-count" class="badge">טרם בוצע חיפוש</span>
+            </div>
+            <div id="loading-overlay-board" class="loading-overlay" aria-hidden="true">
+                <div class="loading-card">
+                    <div class="loading-title" id="loading-text-board">טוען נתונים...</div>
+                    <div class="train-loader">
+                        <div class="train-track"></div>
+                        <div class="train-runner">🚆</div>
+                    </div>
+                </div>
             </div>
             <div class="board-controls">
                 <div class="field">
@@ -135,7 +144,10 @@
         let stationsByLabel = new Map();
         let boardRowsRaw = [];
         let boardStationCurrent = null;
-        let activeRequests = 0;
+        const activeRequests = {
+            search: 0,
+            board: 0,
+        };
         let activeSuggestionInput = null;
         const MIN_CHARS_FOR_SUGGESTIONS = 3;
 
@@ -246,18 +258,18 @@
             return payload;
         }
 
-        function showLoading(text) {
-            activeRequests += 1;
-            const overlay = document.getElementById('loading-overlay');
-            const label = document.getElementById('loading-text');
+        function showLoading(target, text) {
+            activeRequests[target] += 1;
+            const overlay = document.getElementById(`loading-overlay-${target}`);
+            const label = document.getElementById(`loading-text-${target}`);
             label.textContent = text || 'טוען נתונים...';
             overlay.style.display = 'flex';
         }
 
-        function hideLoading() {
-            activeRequests = Math.max(0, activeRequests - 1);
-            if (activeRequests === 0) {
-                document.getElementById('loading-overlay').style.display = 'none';
+        function hideLoading(target) {
+            activeRequests[target] = Math.max(0, activeRequests[target] - 1);
+            if (activeRequests[target] === 0) {
+                document.getElementById(`loading-overlay-${target}`).style.display = 'none';
             }
         }
 
@@ -390,6 +402,7 @@
         }
 
         function setResultsHeader(fromName, toName, count) {
+            document.getElementById('results-header').style.display = 'flex';
             document.getElementById('results-title').textContent = `${fromName} ← ${toName}`;
             document.getElementById('results-count').textContent = `${count} נסיעות`;
         }
@@ -565,9 +578,11 @@
             const time = forceAllDay ? '00:00' : document.getElementById('time-picker').value;
             const url = `/api/routes/${fromStation.id}/${toStation.id}?date=${date}&time=${time}`;
 
+            document.getElementById('results-header').style.display = 'flex';
             body.innerHTML = '<div class="loading">טוען נסיעות...</div>';
             hint.textContent = 'מבצע חיפוש...';
-            showLoading('מחפש נסיעות...');
+            document.getElementById('results-count').textContent = 'מחפש...';
+            showLoading('search', 'מחפש נסיעות...');
 
             try {
                 const routes = await fetchJson(url);
@@ -579,7 +594,7 @@
                 body.innerHTML = '<div class="empty-state">שגיאה בטעינת הנתונים. נסה שוב.</div>';
                 hint.textContent = `שגיאה: ${error.message}`;
             } finally {
-                hideLoading();
+                hideLoading('search');
             }
         }
 
@@ -597,7 +612,8 @@
 
             body.innerHTML = '<div class="loading">טוען זמן אמת...</div>';
             hint.textContent = `מחפש רכבות ל-${minutes} הדקות הקרובות...`;
-            showLoading('מעדכן זמן אמת...');
+            document.getElementById('board-count').textContent = 'מחפש...';
+            showLoading('board', 'מעדכן זמן אמת...');
 
             try {
                 const rows = await fetchJson(`/api/station-board/${station.id}?upcoming=1&minutes=${minutes}&fast=1`);
@@ -610,7 +626,7 @@
                 body.innerHTML = '<div class="empty-state">שגיאה בטעינת זמן אמת. נסה שוב.</div>';
                 hint.textContent = `שגיאה: ${error.message}`;
             } finally {
-                hideLoading();
+                hideLoading('board');
             }
         }
 
