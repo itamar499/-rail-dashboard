@@ -1,0 +1,537 @@
+﻿<!DOCTYPE html>
+<html lang="he" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>חיפוש נסיעות רכבת ישראל</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+
+<body>
+    <div class="bg-orb orb-a"></div>
+    <div class="bg-orb orb-b"></div>
+
+    <main class="page">
+        <header class="topbar">
+            <p class="eyebrow">Israel Rail</p>
+            <h1>חיפוש לכל תחנה ולכל נסיעה</h1>
+            <p class="subtitle">בחר תחנת מוצא ויעד מתוך כל תחנות רכבת ישראל, וקבל את כל הנסיעות לתאריך והשעה שבחרת.</p>
+        </header>
+        
+        <div id="loading-overlay" class="loading-overlay" aria-hidden="true">
+            <div class="loading-card">
+                <div class="loading-title" id="loading-text">טוען נתונים...</div>
+                <div class="train-loader">
+                    <div class="train-track"></div>
+                    <div class="train-runner">🚆</div>
+                </div>
+            </div>
+        </div>
+
+        <section class="search-panel">
+            <div class="search-grid">
+                <div class="field">
+                    <label for="from-input">תחנת מוצא</label>
+                    <input id="from-input" list="stations-list" placeholder="הקלד שם תחנה" autocomplete="off">
+                </div>
+
+                <div class="swap-wrap">
+                    <button id="swap-btn" class="icon-button" aria-label="החלפת כיוון">
+                        <i data-lucide="arrow-up-down"></i>
+                    </button>
+                </div>
+
+                <div class="field">
+                    <label for="to-input">תחנת יעד</label>
+                    <input id="to-input" list="stations-list" placeholder="הקלד שם תחנה" autocomplete="off">
+                </div>
+
+                <div class="field small">
+                    <label for="date-picker">תאריך</label>
+                    <input type="date" id="date-picker">
+                </div>
+
+                <div class="field small">
+                    <label for="time-picker">שעה</label>
+                    <input type="time" id="time-picker">
+                </div>
+
+                <div class="actions">
+                    <button id="search-btn" class="btn-primary">
+                        <i data-lucide="search" size="18"></i>
+                        חפש נסיעות
+                    </button>
+                    <button id="all-day-btn" class="btn-secondary">
+                        <i data-lucide="calendar-days" size="18"></i>
+                        כל היום
+                    </button>
+                </div>
+            </div>
+
+            <datalist id="stations-list"></datalist>
+            <p id="search-hint" class="hint">טוען תחנות...</p>
+        </section>
+
+        <section class="results-panel">
+            <div class="results-header">
+                <h2 id="results-title">תוצאות</h2>
+                <span id="results-count" class="badge">0 נסיעות</span>
+            </div>
+            <div id="results-body" class="results-body">
+                <div class="empty-state">בחר תחנות ולחץ "חפש נסיעות"</div>
+            </div>
+        </section>
+
+        <section class="results-panel">
+            <div class="results-header">
+                <h2>זמן אמת בתחנה</h2>
+                <span id="board-count" class="badge">0 רכבות</span>
+            </div>
+            <div class="board-controls">
+                <div class="field">
+                    <label for="board-station-input">תחנה</label>
+                    <input id="board-station-input" list="stations-list" placeholder="הקלד שם תחנה" autocomplete="off">
+                </div>
+                <div class="field small">
+                    <label for="board-window">טווח</label>
+                    <select id="board-window">
+                        <option value="30" selected>30 דקות</option>
+                        <option value="60">60 דקות</option>
+                        <option value="90">90 דקות</option>
+                        <option value="120">120 דקות</option>
+                    </select>
+                </div>
+                <div class="actions">
+                    <button id="board-btn" class="btn-primary">
+                        <i data-lucide="radio" size="18"></i>
+                        הצג זמן אמת
+                    </button>
+                </div>
+            </div>
+            <p id="board-hint" class="hint">בחר תחנה כדי לראות את כל הרכבות הקרובות שעוברות בה.</p>
+            <div id="board-body" class="results-body">
+                <div class="empty-state">אין נתונים להצגה</div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        let stations = [];
+        let stationsByLabel = new Map();
+        let boardRowsRaw = [];
+        let boardStationCurrent = null;
+        let activeRequests = 0;
+
+        function stationLabel(station) {
+            if (station.heb && station.eng) return `${station.heb} | ${station.eng} (${station.id})`;
+            return `${station.name} (${station.id})`;
+        }
+
+        function parseStationInput(rawValue) {
+            const value = (rawValue || '').trim();
+            if (!value) return null;
+
+            if (stationsByLabel.has(value)) {
+                return stationsByLabel.get(value);
+            }
+
+            const normalized = value.toLowerCase();
+            const directId = Number(normalized);
+            if (!Number.isNaN(directId)) {
+                const byId = stations.find(s => s.id === directId);
+                if (byId) return byId;
+            }
+
+            const candidate = stations.find(s => {
+                const name = String(s.name || '').toLowerCase();
+                const heb = String(s.heb || '').toLowerCase();
+                const eng = String(s.eng || '').toLowerCase();
+                return name.includes(normalized) || heb.includes(normalized) || eng.includes(normalized);
+            });
+
+            return candidate || null;
+        }
+
+        function formatTime(value) {
+            if (!value) return '--:--';
+            if (value.includes('T')) {
+                const parts = value.split('T');
+                if (parts[1] && parts[1].length >= 5) return parts[1].slice(0, 5);
+            }
+            if (value.length >= 5 && value.includes(':')) return value.slice(0, 5);
+            return '--:--';
+        }
+
+        function routeStops(route) {
+            const allStops = [];
+            route.trains.forEach(train => train.stops.forEach(stop => allStops.push(stop)));
+            return allStops.filter((s, i) => i === 0 || s.name !== allStops[i - 1].name);
+        }
+
+        function minutesBetween(fromIso, toIso) {
+            const from = new Date(fromIso);
+            const to = new Date(toIso);
+            if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return null;
+            return Math.max(0, Math.round((to - from) / 60000));
+        }
+
+        function transferRows(route) {
+            if (!route.trains || route.trains.length < 2) return [];
+            const rows = [];
+            for (let i = 0; i < route.trains.length - 1; i += 1) {
+                const current = route.trains[i];
+                const next = route.trains[i + 1];
+                const station = current.dst || next.src || 'תחנה לא ידועה';
+                const fromPlatform = current.dst_platform || (current.stops?.[current.stops.length - 1]?.platform) || '-';
+                const toPlatform = next.platform || (next.stops?.[0]?.platform) || '-';
+                const wait = minutesBetween(current.arrival, next.departure);
+                rows.push({
+                    station,
+                    fromPlatform,
+                    toPlatform,
+                    wait,
+                });
+            }
+            return rows;
+        }
+
+        function stopsWithTransferMarkers(route) {
+            const stops = routeStops(route);
+            const transfers = transferRows(route);
+            if (!transfers.length) {
+                return stops.map(stop => ({ type: 'stop', stop }));
+            }
+
+            const markersByStation = new Map();
+            transfers.forEach((transfer, idx) => {
+                const key = transfer.station;
+                if (!markersByStation.has(key)) markersByStation.set(key, []);
+                markersByStation.get(key).push({
+                    ...transfer,
+                    index: idx + 1,
+                });
+            });
+
+            const items = [];
+            stops.forEach(stop => {
+                items.push({ type: 'stop', stop });
+                const markers = markersByStation.get(stop.name) || [];
+                markers.forEach(marker => items.push({ type: 'transfer', marker }));
+            });
+
+            return items;
+        }
+
+        async function fetchJson(url) {
+            const response = await fetch(url);
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || 'Request failed');
+            return payload;
+        }
+
+        function showLoading(text) {
+            activeRequests += 1;
+            const overlay = document.getElementById('loading-overlay');
+            const label = document.getElementById('loading-text');
+            label.textContent = text || 'טוען נתונים...';
+            overlay.style.display = 'flex';
+        }
+
+        function hideLoading() {
+            activeRequests = Math.max(0, activeRequests - 1);
+            if (activeRequests === 0) {
+                document.getElementById('loading-overlay').style.display = 'none';
+            }
+        }
+
+        async function loadStations() {
+            const hint = document.getElementById('search-hint');
+            try {
+                stations = await fetchJson('/api/stations');
+                stationsByLabel = new Map();
+                const list = document.getElementById('stations-list');
+                list.innerHTML = '';
+
+                stations.forEach(station => {
+                    const label = stationLabel(station);
+                    stationsByLabel.set(label, station);
+                    const option = document.createElement('option');
+                    option.value = label;
+                    list.appendChild(option);
+                });
+
+                hint.textContent = `נטענו ${stations.length} תחנות.`;
+            } catch (error) {
+                console.error(error);
+                hint.textContent = 'שגיאה בטעינת תחנות. רענן את הדף.';
+            }
+        }
+
+        function setResultsHeader(fromName, toName, count) {
+            document.getElementById('results-title').textContent = `${fromName} ← ${toName}`;
+            document.getElementById('results-count').textContent = `${count} נסיעות`;
+        }
+
+        function renderResults(routes) {
+            const body = document.getElementById('results-body');
+            if (!routes.length) {
+                body.innerHTML = '<div class="empty-state">לא נמצאו נסיעות עבור הבחירה הזו.</div>';
+                return;
+            }
+
+            body.innerHTML = routes.map((route, idx) => {
+                const timeline = stopsWithTransferMarkers(route);
+                const transfers = transferRows(route);
+                const stopCount = timeline.filter(item => item.type === 'stop').length;
+                return `
+                    <article class="trip-card">
+                        <button class="trip-head" onclick="toggleDetails(${idx})">
+                            <strong>${formatTime(route.start_time)}</strong>
+                            <span class="arrow">→</span>
+                            <strong>${formatTime(route.end_time)}</strong>
+                            <span class="badge subtle">${stopCount} תחנות</span>
+                            <i data-lucide="chevron-down" size="16"></i>
+                        </button>
+                        <div id="trip-details-${idx}" class="trip-details">
+                            ${transfers.map((t, transferIdx) => `
+                                <div class="transfer-note">
+                                    <strong>החלפה ${transferIdx + 1}: ${t.station}</strong>
+                                    <span>רציף יורדים: ${t.fromPlatform} · רציף עולים: ${t.toPlatform}${t.wait !== null ? ` · המתנה: ${t.wait} דק'` : ''}</span>
+                                </div>
+                            `).join('')}
+                            ${timeline.map(item => `
+                                ${item.type === 'stop' ? `
+                                <div class="stop-row">
+                                    <span>${item.stop.name}</span>
+                                    <strong>${formatTime(item.stop.arrival || item.stop.departure)}</strong>
+                                </div>
+                                ` : `
+                                <div class="transfer-row-inline">
+                                    <strong>החלפה ${item.marker.index}</strong>
+                                    <span>${item.marker.station} · רציף ${item.marker.fromPlatform} → ${item.marker.toPlatform}${item.marker.wait !== null ? ` · ${item.marker.wait} דק'` : ''}</span>
+                                </div>
+                                `}
+                            `).join('')}
+                        </div>
+                    </article>
+                `;
+            }).join('');
+
+            lucide.createIcons();
+        }
+
+        function renderBoard(rows) {
+            const body = document.getElementById('board-body');
+            document.getElementById('board-count').textContent = `${rows.length} רכבות`;
+            if (!rows.length) {
+                body.innerHTML = '<div class="empty-state">לא נמצאו רכבות בטווח הזמן שנבחר.</div>';
+                return;
+            }
+
+            body.innerHTML = rows.map((row, idx) => `
+                <article class="trip-card">
+                    <button class="board-row" onclick="toggleBoardDetails(${idx})">
+                        <div><strong>${row.line_name || `${row.src} - ${row.dest}`}</strong></div>
+                        <div class="board-time">
+                            <span>${row.eta_minutes ?? '?'} דק'</span>
+                        </div>
+                        <i data-lucide="chevron-down" size="16"></i>
+                    </button>
+                    <div id="board-details-${idx}" class="board-details">
+                        ${Array.isArray(row.stops) ? row.stops.map(stop => `
+                            <div class="stop-row">
+                                <span>${stop.name}</span>
+                                <strong>${formatTime(stop.time)}</strong>
+                            </div>
+                        `).join('') : ''}
+                        <div class="board-meta">יציאה: ${formatTime(row.time)} · רציף ${row.platform || '-'} · רכבת ${row.train_number || '-'}</div>
+                    </div>
+                </article>
+            `).join('');
+
+            lucide.createIcons();
+        }
+
+        function boardLineMeta(row, station) {
+            const stops = Array.isArray(row.stops) ? row.stops : [];
+            let idx = stops.findIndex(s => String(s.id) === String(station.id));
+            if (idx < 0) idx = stops.findIndex(s => s.name === station.name);
+            if (idx < 0) idx = 0;
+
+            const nextStop = stops[idx + 1]?.name || '';
+            const prevStop = stops[idx - 1]?.name || '';
+            const directionKey = nextStop ? `to:${nextStop}` : (prevStop ? `from:${prevStop}` : `line:${row.line_name}`);
+            const endName = stops.length ? stops[stops.length - 1].name : (row.dest || '');
+            const score = stops.length;
+            return { directionKey, endName, score };
+        }
+
+        function filterTerminalLines(rows, station) {
+            if (!rows.length || !station) return rows;
+            const preferredEndByDirection = new Map();
+
+            rows.forEach(row => {
+                const meta = boardLineMeta(row, station);
+                const current = preferredEndByDirection.get(meta.directionKey);
+                if (!current || meta.score > current.score) {
+                    preferredEndByDirection.set(meta.directionKey, { endName: meta.endName, score: meta.score });
+                }
+            });
+
+            return rows.filter(row => {
+                const meta = boardLineMeta(row, station);
+                const preferred = preferredEndByDirection.get(meta.directionKey);
+                return preferred && preferred.endName === meta.endName;
+            });
+        }
+
+        function applyBoardFilter() {
+            const rows = filterTerminalLines(boardRowsRaw, boardStationCurrent);
+            renderBoard(rows);
+        }
+
+        function toggleBoardDetails(idx) {
+            const details = document.getElementById(`board-details-${idx}`);
+            const isOpen = details.style.display === 'block';
+
+            document.querySelectorAll('.board-details').forEach(d => d.style.display = 'none');
+            document.querySelectorAll('.board-row i').forEach(icon => icon.style.transform = 'rotate(0deg)');
+
+            if (!isOpen) {
+                details.style.display = 'block';
+                const icon = details.previousElementSibling.querySelector('i');
+                icon.style.transform = 'rotate(180deg)';
+                icon.style.transition = 'transform 0.2s ease';
+            }
+        }
+
+        function toggleDetails(idx) {
+            const details = document.getElementById(`trip-details-${idx}`);
+            const isOpen = details.style.display === 'block';
+
+            document.querySelectorAll('.trip-details').forEach(d => d.style.display = 'none');
+            document.querySelectorAll('.trip-head i').forEach(icon => icon.style.transform = 'rotate(0deg)');
+
+            if (!isOpen) {
+                details.style.display = 'block';
+                const icon = details.previousElementSibling.querySelector('i');
+                icon.style.transform = 'rotate(180deg)';
+                icon.style.transition = 'transform 0.2s ease';
+            }
+        }
+
+        async function runSearch(forceAllDay) {
+            const fromInput = document.getElementById('from-input').value;
+            const toInput = document.getElementById('to-input').value;
+            const fromStation = parseStationInput(fromInput);
+            const toStation = parseStationInput(toInput);
+
+            const body = document.getElementById('results-body');
+            const hint = document.getElementById('search-hint');
+
+            if (!fromStation || !toStation) {
+                hint.textContent = 'בחר תחנות מתוך הרשימה (או הקלד שם מדויק/חלקי).';
+                return;
+            }
+
+            if (fromStation.id === toStation.id) {
+                hint.textContent = 'תחנת מוצא ויעד חייבות להיות שונות.';
+                return;
+            }
+
+            const date = document.getElementById('date-picker').value;
+            const time = forceAllDay ? '00:00' : document.getElementById('time-picker').value;
+            const url = `/api/routes/${fromStation.id}/${toStation.id}?date=${date}&time=${time}`;
+
+            body.innerHTML = '<div class="loading">טוען נסיעות...</div>';
+            hint.textContent = 'מבצע חיפוש...';
+            showLoading('מחפש נסיעות...');
+
+            try {
+                const routes = await fetchJson(url);
+                setResultsHeader(fromStation.name, toStation.name, routes.length);
+                renderResults(routes);
+                hint.textContent = forceAllDay ? 'מציג את כל הנסיעות ליום הנבחר.' : 'מציג נסיעות החל מהשעה שנבחרה.';
+            } catch (error) {
+                console.error(error);
+                body.innerHTML = '<div class="empty-state">שגיאה בטעינת הנתונים. נסה שוב.</div>';
+                hint.textContent = `שגיאה: ${error.message}`;
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function runStationRealtime() {
+            const stationInput = document.getElementById('board-station-input').value;
+            const station = parseStationInput(stationInput);
+            const minutes = document.getElementById('board-window').value;
+            const hint = document.getElementById('board-hint');
+            const body = document.getElementById('board-body');
+
+            if (!station) {
+                hint.textContent = 'בחר תחנה מתוך הרשימה (או הקלד שם מדויק/חלקי).';
+                return;
+            }
+
+            body.innerHTML = '<div class="loading">טוען זמן אמת...</div>';
+            hint.textContent = `מחפש רכבות ל-${minutes} הדקות הקרובות...`;
+            showLoading('מעדכן זמן אמת...');
+
+            try {
+                const rows = await fetchJson(`/api/station-board/${station.id}?upcoming=1&minutes=${minutes}&fast=1`);
+                boardRowsRaw = rows;
+                boardStationCurrent = station;
+                applyBoardFilter();
+                hint.textContent = `זמן אמת לתחנה: ${station.name}`;
+            } catch (error) {
+                console.error(error);
+                body.innerHTML = '<div class="empty-state">שגיאה בטעינת זמן אמת. נסה שוב.</div>';
+                hint.textContent = `שגיאה: ${error.message}`;
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function swapStations() {
+            const from = document.getElementById('from-input');
+            const to = document.getElementById('to-input');
+            const temp = from.value;
+            from.value = to.value;
+            to.value = temp;
+        }
+
+        function initDateTime() {
+            const now = new Date();
+            document.getElementById('date-picker').valueAsDate = now;
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            document.getElementById('time-picker').value = `${hh}:${mm}`;
+        }
+
+        document.getElementById('swap-btn').addEventListener('click', swapStations);
+        document.getElementById('search-btn').addEventListener('click', () => runSearch(false));
+        document.getElementById('all-day-btn').addEventListener('click', () => runSearch(true));
+        document.getElementById('board-btn').addEventListener('click', runStationRealtime);
+
+        document.getElementById('from-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') runSearch(false);
+        });
+        document.getElementById('to-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') runSearch(false);
+        });
+        document.getElementById('board-station-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') runStationRealtime();
+        });
+
+        initDateTime();
+        loadStations().then(() => {
+            document.getElementById('search-hint').textContent = 'בחר תחנת מוצא ותחנת יעד כדי להתחיל חיפוש.';
+        });
+
+        lucide.createIcons();
+    </script>
+</body>
+
+</html>
