@@ -11,6 +11,13 @@
 </head>
 
 <body>
+    <div id="boot-splash" class="boot-splash" aria-live="polite">
+        <div class="boot-splash-card">
+            <img src="app-icon.png" alt="Rail Dashboard" class="boot-splash-icon">
+            <p class="boot-splash-text">טוען את האפליקציה...</p>
+        </div>
+    </div>
+
     <div class="bg-orb orb-a"></div>
     <div class="bg-orb orb-b"></div>
 
@@ -249,6 +256,16 @@
             if (activeRequests === 0) {
                 document.getElementById('loading-overlay').style.display = 'none';
             }
+        }
+
+        function hideBootSplash() {
+            const splash = document.getElementById('boot-splash');
+            if (!splash || splash.dataset.hidden === '1') return;
+            splash.dataset.hidden = '1';
+            splash.classList.add('boot-splash-hidden');
+            setTimeout(() => {
+                splash.style.display = 'none';
+            }, 280);
         }
 
         async function loadStations() {
@@ -533,7 +550,14 @@
         initDateTime();
         loadStations().then(() => {
             document.getElementById('search-hint').textContent = 'בחר תחנת מוצא ותחנת יעד כדי להתחיל חיפוש.';
+        }).finally(() => {
+            hideBootSplash();
         });
+
+        window.addEventListener('load', () => {
+            setTimeout(hideBootSplash, 300);
+        });
+        setTimeout(hideBootSplash, 6000);
 
         lucide.createIcons();
     </script>

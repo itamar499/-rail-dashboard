@@ -297,6 +297,10 @@ def css():
 def favicon():
     return send_from_directory(".", "favicon.svg")
 
+@app.route("/app-icon.png")
+def app_icon():
+    return send_from_directory(".", "app-icon.png")
+
 
 @app.route("/api/stations")
 def get_stations():

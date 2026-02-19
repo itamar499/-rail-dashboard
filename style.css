@@ -25,6 +25,42 @@ body {
     -webkit-text-size-adjust: 100%;
 }
 
+.boot-splash {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(circle at 20% 0%, #e8f6ff 0%, #d6efff 44%, #b7deff 100%);
+    transition: opacity 0.28s ease;
+}
+
+.boot-splash-hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.boot-splash-card {
+    display: grid;
+    gap: 12px;
+    justify-items: center;
+    text-align: center;
+}
+
+.boot-splash-icon {
+    width: min(44vw, 168px);
+    aspect-ratio: 1 / 1;
+    border-radius: 26%;
+    box-shadow: 0 14px 30px rgba(4, 49, 92, 0.24);
+}
+
+.boot-splash-text {
+    margin: 0;
+    color: #0d477a;
+    font-weight: 700;
+}
+
 .bg-orb {
     position: fixed;
     border-radius: 50%;
