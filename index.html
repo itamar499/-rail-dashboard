@@ -26,6 +26,12 @@
             <p class="eyebrow">מסילות בזמן אמת</p>
             <h1>חיפוש לכל תחנה ולכל נסיעה</h1>
             <p class="subtitle">בחר תחנת מוצא ויעד מתוך כל תחנות רכבת ישראל, וקבל את כל הנסיעות לתאריך והשעה שבחרת.</p>
+            <div class="topbar-tools">
+                <button id="theme-toggle" class="btn-secondary theme-toggle" type="button">
+                    <i data-lucide="sun-moon" size="16"></i>
+                    תצוגה: אוטומטי
+                </button>
+            </div>
         </header>
         
         <section class="search-panel">
@@ -150,6 +156,7 @@
         };
         let activeSuggestionInput = null;
         const MIN_CHARS_FOR_SUGGESTIONS = 3;
+        const THEME_STORAGE_KEY = 'rail_theme_mode';
 
         function stationLabel(station) {
             if (station.heb && station.eng) return `${station.heb} | ${station.eng} (${station.id})`;
@@ -191,6 +198,19 @@
             return '--:--';
         }
 
+        function tripDayLabel(value) {
+            if (!value) return '';
+            const dt = new Date(value);
+            if (Number.isNaN(dt.getTime())) return '';
+            const now = new Date();
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const tripDate = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+            const diffDays = Math.round((tripDate - today) / 86400000);
+            if (diffDays === 0) return '';
+            if (diffDays === 1) return 'מחר';
+            return `${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}`;
+        }
+
         function routeStops(route) {
             const allStops = [];
             route.trains.forEach(train => train.stops.forEach(stop => allStops.push(stop)));
@@ -202,6 +222,39 @@
             const to = new Date(toIso);
             if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return null;
             return Math.max(0, Math.round((to - from) / 60000));
+        }
+
+        function formatDurationMinutes(totalMinutes) {
+            if (totalMinutes === null) return 'משך נסיעה: --';
+            const hours = Math.floor(totalMinutes / 60);
+            const minutes = totalMinutes % 60;
+            if (hours && minutes) return `משך נסיעה: ${hours}ש ${minutes}דק'`;
+            if (hours) return `משך נסיעה: ${hours}ש`;
+            return `משך נסיעה: ${minutes} דק'`;
+        }
+
+        function realtimeDelayLabel(delayMinutes, hasRealtime) {
+            if (delayMinutes === null || delayMinutes === undefined || Number.isNaN(delayMinutes)) {
+                return hasRealtime ? { text: 'זמן אמת', cls: 'neutral' } : null;
+            }
+            if (delayMinutes > 0) return { text: `איחור +${delayMinutes}`, cls: 'late' };
+            if (delayMinutes < 0) return { text: `מקדים ${Math.abs(delayMinutes)}`, cls: 'early' };
+            return { text: 'בזמן', cls: 'ontime' };
+        }
+
+        function boardLineAccent(row) {
+            const palette = ['#0a65cc', '#f06a00', '#0f9d58', '#d14343', '#0b8ea8', '#9a5a0b'];
+            const trainNum = Number(row.train_number);
+            if (Number.isFinite(trainNum) && trainNum > 0) {
+                return palette[trainNum % palette.length];
+            }
+            const key = String(row.line_name || `${row.src || ''}-${row.dest || ''}`);
+            let hash = 0;
+            for (let i = 0; i < key.length; i += 1) {
+                hash = ((hash << 5) - hash) + key.charCodeAt(i);
+                hash |= 0;
+            }
+            return palette[Math.abs(hash) % palette.length];
         }
 
         function transferRows(route) {
@@ -392,12 +445,22 @@
             positionSuggestions(input);
             box.hidden = false;
 
+            const selectSuggestion = (btn) => {
+                if (!btn) return;
+                input.value = btn.dataset.stationLabel || btn.textContent || '';
+                hideSuggestions();
+                input.dispatchEvent(new Event('change'));
+            };
+
             box.querySelectorAll('.station-option').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    input.value = btn.dataset.stationLabel || '';
-                    hideSuggestions();
-                    input.dispatchEvent(new Event('change'));
+                btn.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    selectSuggestion(btn);
                 });
+                btn.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    selectSuggestion(btn);
+                }, { passive: false });
             });
         }
 
@@ -418,13 +481,18 @@
                 const timeline = stopsWithTransferMarkers(route);
                 const transfers = transferRows(route);
                 const stopCount = timeline.filter(item => item.type === 'stop').length;
+                const durationMinutes = minutesBetween(route.start_time, route.end_time);
+                const durationLabel = formatDurationMinutes(durationMinutes);
+                const dayLabel = tripDayLabel(route.start_time);
                 return `
                     <article class="trip-card">
                         <button class="trip-head" onclick="toggleDetails(${idx})">
-                            <strong>${formatTime(route.start_time)}</strong>
+                            <strong class="trip-time">${formatTime(route.start_time)}</strong>
                             <span class="arrow">→</span>
-                            <strong>${formatTime(route.end_time)}</strong>
-                            <span class="badge subtle">${stopCount} תחנות</span>
+                            <strong class="trip-time">${formatTime(route.end_time)}</strong>
+                            <span class="badge subtle trip-day${dayLabel ? '' : ' trip-day-empty'}">${dayLabel || '&nbsp;'}</span>
+                            <span class="badge subtle trip-stat">${stopCount} תחנות</span>
+                            <span class="badge subtle trip-stat">${durationLabel}</span>
                             <i data-lucide="chevron-down" size="16"></i>
                         </button>
                         <div id="trip-details-${idx}" class="trip-details">
@@ -464,22 +532,38 @@
             }
 
             body.innerHTML = rows.map((row, idx) => `
-                <article class="trip-card">
+                <article class="trip-card board-card" style="--line-accent: ${boardLineAccent(row)}; --card-i: ${idx};">
                     <button class="board-row" onclick="toggleBoardDetails(${idx})">
-                        <div><strong>${row.line_name || `${row.src} - ${row.dest}`}</strong></div>
+                        <div class="board-main">
+                            <div class="board-topline">
+                                <strong class="board-line">${row.line_name || `${row.src} - ${row.dest}`}</strong>
+                                <span class="board-destination">לכיוון ${row.dest || '-'}</span>
+                            </div>
+                            <div class="board-tags">
+                                <span class="board-pill">יציאה ${formatTime(row.time)}</span>
+                                <span class="board-pill">רציף ${row.platform || '-'}</span>
+                                <span class="board-pill">רכבת ${row.train_number || '-'}</span>
+                            </div>
+                        </div>
                         <div class="board-time">
-                            <span>${row.eta_minutes ?? '?'} דק'</span>
+                            <span class="eta-minutes">${row.effective_eta_minutes ?? row.eta_minutes ?? '?'}</span>
+                            <span class="eta-unit">דק'</span>
+                            ${(() => {
+                                const status = realtimeDelayLabel(row.delay_minutes, row.has_realtime);
+                                return status ? `<span class="board-delay ${status.cls}">${status.text}</span>` : '';
+                            })()}
                         </div>
                         <i data-lucide="chevron-down" size="16"></i>
                     </button>
                     <div id="board-details-${idx}" class="board-details">
+                        <div class="board-details-head">תחנות במסלול</div>
                         ${Array.isArray(row.stops) ? row.stops.map(stop => `
                             <div class="stop-row">
                                 <span>${stop.name}</span>
                                 <strong>${formatTime(stop.time)}</strong>
                             </div>
                         `).join('') : ''}
-                        <div class="board-meta">יציאה: ${formatTime(row.time)} · רציף ${row.platform || '-'} · רכבת ${row.train_number || '-'}</div>
+                        <div class="board-meta">קו ${row.line_name || `${row.src} - ${row.dest}`}</div>
                     </div>
                 </article>
             `).join('');
@@ -487,42 +571,8 @@
             lucide.createIcons();
         }
 
-        function boardLineMeta(row, station) {
-            const stops = Array.isArray(row.stops) ? row.stops : [];
-            let idx = stops.findIndex(s => String(s.id) === String(station.id));
-            if (idx < 0) idx = stops.findIndex(s => s.name === station.name);
-            if (idx < 0) idx = 0;
-
-            const nextStop = stops[idx + 1]?.name || '';
-            const prevStop = stops[idx - 1]?.name || '';
-            const directionKey = nextStop ? `to:${nextStop}` : (prevStop ? `from:${prevStop}` : `line:${row.line_name}`);
-            const endName = stops.length ? stops[stops.length - 1].name : (row.dest || '');
-            const score = stops.length;
-            return { directionKey, endName, score };
-        }
-
-        function filterTerminalLines(rows, station) {
-            if (!rows.length || !station) return rows;
-            const preferredEndByDirection = new Map();
-
-            rows.forEach(row => {
-                const meta = boardLineMeta(row, station);
-                const current = preferredEndByDirection.get(meta.directionKey);
-                if (!current || meta.score > current.score) {
-                    preferredEndByDirection.set(meta.directionKey, { endName: meta.endName, score: meta.score });
-                }
-            });
-
-            return rows.filter(row => {
-                const meta = boardLineMeta(row, station);
-                const preferred = preferredEndByDirection.get(meta.directionKey);
-                return preferred && preferred.endName === meta.endName;
-            });
-        }
-
         function applyBoardFilter() {
-            const rows = filterTerminalLines(boardRowsRaw, boardStationCurrent);
-            renderBoard(rows);
+            renderBoard(boardRowsRaw);
         }
 
         function toggleBoardDetails(idx) {
@@ -646,6 +696,38 @@
             document.getElementById('time-picker').value = `${hh}:${mm}`;
         }
 
+        function applyThemeMode(mode) {
+            const root = document.documentElement;
+            if (mode === 'dark' || mode === 'light') {
+                root.setAttribute('data-theme', mode);
+            } else {
+                root.removeAttribute('data-theme');
+            }
+
+            const labels = {
+                auto: 'אוטומטי',
+                dark: 'כהה',
+                light: 'בהיר',
+            };
+            const btn = document.getElementById('theme-toggle');
+            if (btn) btn.innerHTML = `<i data-lucide="sun-moon" size="16"></i> תצוגה: ${labels[mode] || labels.auto}`;
+            lucide.createIcons();
+        }
+
+        function initThemeToggle() {
+            const btn = document.getElementById('theme-toggle');
+            const stored = localStorage.getItem(THEME_STORAGE_KEY) || 'auto';
+            applyThemeMode(stored);
+            if (!btn) return;
+            btn.addEventListener('click', () => {
+                const current = localStorage.getItem(THEME_STORAGE_KEY) || 'auto';
+                const order = ['auto', 'dark', 'light'];
+                const next = order[(order.indexOf(current) + 1) % order.length];
+                localStorage.setItem(THEME_STORAGE_KEY, next);
+                applyThemeMode(next);
+            });
+        }
+
         document.getElementById('swap-btn').addEventListener('click', swapStations);
         document.getElementById('search-btn').addEventListener('click', () => runSearch(false));
         document.getElementById('all-day-btn').addEventListener('click', () => runSearch(true));
@@ -690,6 +772,7 @@
             });
         }
 
+        initThemeToggle();
         initDateTime();
         loadStations().then(() => {
             document.getElementById('search-hint').textContent = 'בחר תחנת מוצא ותחנת יעד כדי להתחיל חיפוש.';
@@ -707,3 +790,4 @@
 </body>
 
 </html>
+
