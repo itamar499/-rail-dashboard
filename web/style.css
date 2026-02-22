@@ -664,15 +664,30 @@ input:focus {
     border-bottom: 1px dashed #e2edf8;
 }
 
+.board-stops-track {
+    position: relative;
+}
+
+.board-stops-track::before {
+    content: '';
+    position: absolute;
+    right: 7px;
+    top: 12px;
+    bottom: 12px;
+    width: 2px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(10, 101, 204, 0.25), rgba(10, 101, 204, 0.55));
+}
+
 .board-details .stop-row span {
     position: relative;
-    padding-right: 14px;
+    padding-right: 20px;
 }
 
 .board-details .stop-row span::before {
     content: '';
     position: absolute;
-    right: 1px;
+    right: 7px;
     top: 50%;
     transform: translateY(-50%);
     width: 6px;
@@ -680,6 +695,17 @@ input:focus {
     border-radius: 50%;
     background: var(--line-accent, #0a65cc);
     box-shadow: 0 0 0 3px rgba(10, 101, 204, 0.14);
+}
+
+.train-track-runner {
+    position: absolute;
+    right: 0;
+    transform: translate(35%, -50%);
+    z-index: 2;
+    font-size: 16px;
+    line-height: 1;
+    filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.2));
+    pointer-events: none;
 }
 
 .stop-row {

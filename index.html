@@ -273,6 +273,37 @@
             return Boolean(searchedName && stopName && searchedName === stopName);
         }
 
+        function stopIndexByName(stops, stationName) {
+            const target = normalizeStationName(stationName);
+            if (!target || !Array.isArray(stops)) return -1;
+            return stops.findIndex(s => normalizeStationName(s?.name) === target);
+        }
+
+        function trainMarkerRatio(row) {
+            const stops = Array.isArray(row?.stops) ? row.stops : [];
+            if (!stops.length) return null;
+            if (stops.length === 1) return 0;
+
+            const currentIdx = stopIndexByName(stops, row?.train_position?.current_last_station);
+            const nextIdx = stopIndexByName(stops, row?.train_position?.next_station);
+            const lastIndex = stops.length - 1;
+
+            let position = null;
+            if (currentIdx >= 0) {
+                position = currentIdx;
+                if (nextIdx >= 0 && nextIdx !== currentIdx) {
+                    const direction = nextIdx > currentIdx ? 1 : -1;
+                    position = currentIdx + (0.42 * direction);
+                }
+            } else if (nextIdx >= 0) {
+                position = nextIdx;
+            }
+
+            if (position === null) return null;
+            const ratio = position / lastIndex;
+            return Math.max(0, Math.min(1, ratio));
+        }
+
         function routeRealtimeLabel(route) {
             const trains = Array.isArray(route?.trains) ? route.trains : [];
             const hasRealtime = trains.some(t => t?.has_realtime);
@@ -668,6 +699,7 @@
             }
 
             body.innerHTML = rows.map((row, idx) => {
+                const markerRatio = trainMarkerRatio(row);
                 const stopsHtml = Array.isArray(row.stops) ? row.stops.map(stop => {
                             const isCurrent = isSearchedBoardStationStop(stop);
                             return `
@@ -706,7 +738,10 @@
                     </button>
                     <div id="board-details-${idx}" class="board-details">
                         <div class="board-details-head">תחנות במסלול</div>
-                        ${stopsHtml}
+                        <div class="board-stops-track">
+                            ${markerRatio !== null ? `<div class="train-track-runner" style="top:${(markerRatio * 100).toFixed(1)}%" title="מיקום רכבת בזמן אמת">🚆</div>` : ''}
+                            ${stopsHtml}
+                        </div>
                         <div class="board-meta">קו ${row.line_name || `${row.src} - ${row.dest}`}</div>
                     </div>
                 </article>
