@@ -950,7 +950,8 @@
             const time = forceAllDay
                 ? '00:00'
                 : (isFutureDateInput(date) && !userEditedTimePicker ? '00:00' : (timePicker.value || currentTimeValue()));
-            const url = `/api/routes/${fromStation.id}/${toStation.id}?date=${date}&time=${time}`;
+            const allDayParam = forceAllDay ? '&all_day=1' : '';
+            const url = `/api/routes/${fromStation.id}/${toStation.id}?date=${date}&time=${time}${allDayParam}`;
 
             document.getElementById('results-header').style.display = 'flex';
             body.innerHTML = '<div class="loading">טוען נסיעות...</div>';

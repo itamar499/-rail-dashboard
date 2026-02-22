@@ -375,6 +375,57 @@ def _filter_routes_from_request_time(routes, date_str, time_str):
     return filtered
 
 
+def _query_routes_once(from_id, to_id, date_str, time_str):
+    try:
+        return TrainSchedule.query(from_id, to_id, date_str, time_str)
+    except Exception:
+        return TrainSchedule.query(
+            STATION_MAP.get(from_id, from_id),
+            STATION_MAP.get(to_id, to_id),
+            date_str,
+            time_str,
+        )
+
+
+def _route_unique_key(route):
+    trains = getattr(route, "trains", []) or []
+    first_train = trains[0] if trains else None
+    first_train_num = None
+    if first_train is not None:
+        first_train_num = (first_train.data or {}).get("trainNumber")
+    return (
+        getattr(route, "start_time", None),
+        getattr(route, "end_time", None),
+        first_train_num,
+        len(trains),
+    )
+
+
+def _query_routes_all_day(from_id, to_id, date_str):
+    # The upstream API usually returns a short "next trips" window per query.
+    # Sample the day in chunks and merge unique routes.
+    anchor_times = [f"{h:02d}:00" for h in range(0, 24, 2)]
+    unique = {}
+
+    for anchor in anchor_times:
+        try:
+            routes = _query_routes_once(from_id, to_id, date_str, anchor)
+        except Exception:
+            continue
+        for route in routes:
+            key = _route_unique_key(route)
+            unique[key] = route
+
+    results = list(unique.values())
+    results.sort(
+        key=lambda r: (
+            _parse_iso_datetime(getattr(r, "start_time", None)) or datetime.max,
+            _parse_iso_datetime(getattr(r, "end_time", None)) or datetime.max,
+        )
+    )
+    return results
+
+
 def _build_train_stops(train):
     stops = []
     raw_route_stops = train.data.get("routeStations", []) or []
@@ -472,27 +523,26 @@ def get_routes(from_id, to_id):
     now = _now_local()
     date_str = _normalize_date(request.args.get("date", now.strftime("%Y-%m-%d")))
     time_str = _normalize_time(request.args.get("time", now.strftime("%H:%M")))
+    all_day = request.args.get("all_day", "0") == "1"
 
     try:
         app.logger.info(
-            "Querying route %s -> %s (%s %s)", from_id, to_id, date_str, time_str
+            "Querying route %s -> %s (%s %s all_day=%s)",
+            from_id,
+            to_id,
+            date_str,
+            time_str,
+            all_day,
         )
-        results = TrainSchedule.query(from_id, to_id, date_str, time_str)
-        results = _filter_routes_from_request_time(results, date_str, time_str)
-        return jsonify([route_to_dict(r) for r in results])
-    except Exception:
-        try:
-            results = TrainSchedule.query(
-                STATION_MAP.get(from_id, from_id),
-                STATION_MAP.get(to_id, to_id),
-                date_str,
-                time_str,
-            )
+        if all_day:
+            results = _query_routes_all_day(from_id, to_id, date_str)
+        else:
+            results = _query_routes_once(from_id, to_id, date_str, time_str)
             results = _filter_routes_from_request_time(results, date_str, time_str)
-            return jsonify([route_to_dict(r) for r in results])
-        except Exception as exc:
-            app.logger.exception("Error fetching route schedules")
-            return jsonify({"error": str(exc), "details": "Error fetching schedules"}), 500
+        return jsonify([route_to_dict(r) for r in results])
+    except Exception as exc:
+        app.logger.exception("Error fetching route schedules")
+        return jsonify({"error": str(exc), "details": "Error fetching schedules"}), 500
 
 
 @app.route("/api/station-board/<station_id>")
