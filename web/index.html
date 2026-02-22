@@ -250,10 +250,18 @@
                 .toLowerCase();
         }
 
-        function isCurrentRealtimeStop(row, stop) {
-            const current = normalizeStationName(row?.train_position?.current_last_station);
-            const stopName = normalizeStationName(stop?.name);
-            return Boolean(current && stopName && current === stopName);
+        function isSearchedBoardStationStop(stop) {
+            if (!boardStationCurrent || !stop) return false;
+
+            const searchedId = String(boardStationCurrent.id || '').trim();
+            const stopId = String(stop.id || '').trim();
+            if (searchedId && stopId && searchedId === stopId) {
+                return true;
+            }
+
+            const searchedName = normalizeStationName(boardStationCurrent.name);
+            const stopName = normalizeStationName(stop.name);
+            return Boolean(searchedName && stopName && searchedName === stopName);
         }
 
         function routeRealtimeLabel(route) {
@@ -566,7 +574,7 @@
 
             body.innerHTML = rows.map((row, idx) => {
                 const stopsHtml = Array.isArray(row.stops) ? row.stops.map(stop => {
-                            const isCurrent = isCurrentRealtimeStop(row, stop);
+                            const isCurrent = isSearchedBoardStationStop(stop);
                             return `
                             <div class="stop-row${isCurrent ? ' current-station' : ''}">
                                 <span${isCurrent ? ' style="font-weight:800"' : ''}>${stop.name}</span>
