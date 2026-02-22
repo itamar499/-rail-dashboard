@@ -242,6 +242,23 @@
             return { text: 'בזמן', cls: 'ontime' };
         }
 
+        function routeRealtimeLabel(route) {
+            const trains = Array.isArray(route?.trains) ? route.trains : [];
+            const hasRealtime = trains.some(t => t?.has_realtime);
+            const delays = trains
+                .map(t => Number(t?.delay_minutes))
+                .filter(v => Number.isFinite(v));
+
+            if (!delays.length) {
+                return hasRealtime ? { text: 'זמן אמת', cls: 'neutral' } : null;
+            }
+            const maxDelay = Math.max(...delays);
+            const minDelay = Math.min(...delays);
+            if (maxDelay > 0) return { text: `איחור +${maxDelay}`, cls: 'late' };
+            if (minDelay < 0) return { text: `מקדים ${Math.abs(minDelay)}`, cls: 'early' };
+            return { text: 'בזמן', cls: 'ontime' };
+        }
+
         function boardLineAccent(row) {
             const palette = ['#0a65cc', '#f06a00', '#0f9d58', '#d14343', '#0b8ea8', '#9a5a0b'];
             const trainNum = Number(row.train_number);
@@ -484,6 +501,7 @@
                 const durationMinutes = minutesBetween(route.start_time, route.end_time);
                 const durationLabel = formatDurationMinutes(durationMinutes);
                 const dayLabel = tripDayLabel(route.start_time);
+                const realtimeStatus = routeRealtimeLabel(route);
                 return `
                     <article class="trip-card">
                         <button class="trip-head" onclick="toggleDetails(${idx})">
@@ -493,6 +511,7 @@
                             <span class="badge subtle trip-day${dayLabel ? '' : ' trip-day-empty'}">${dayLabel || '&nbsp;'}</span>
                             <span class="badge subtle trip-stat">${stopCount} תחנות</span>
                             <span class="badge subtle trip-stat">${durationLabel}</span>
+                            ${realtimeStatus ? `<span class="board-delay ${realtimeStatus.cls}">${realtimeStatus.text}</span>` : ''}
                             <i data-lucide="chevron-down" size="16"></i>
                         </button>
                         <div id="trip-details-${idx}" class="trip-details">
@@ -540,7 +559,10 @@
                                 <span class="board-destination">לכיוון ${row.dest || '-'}</span>
                             </div>
                             <div class="board-tags">
-                                <span class="board-pill">יציאה ${formatTime(row.time)}</span>
+                                <span class="board-pill">יציאה ${formatTime(row.effective_time || row.time)}</span>
+                                ${row.effective_time && formatTime(row.effective_time) !== formatTime(row.time)
+                                    ? `<span class="board-pill">מתוכנן ${formatTime(row.time)}</span>`
+                                    : ''}
                                 <span class="board-pill">רציף ${row.platform || '-'}</span>
                                 <span class="board-pill">רכבת ${row.train_number || '-'}</span>
                             </div>
@@ -790,4 +812,5 @@
 </body>
 
 </html>
+
 

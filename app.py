@@ -4,6 +4,7 @@ import time
 
 from flask import Flask, jsonify, request, send_from_directory
 from israelrailapi import TrainSchedule
+import israelrailapi.api as rail_api
 import israelrailapi.schedule as rail_schedule
 import israelrailapi.train_station as rail_station
 
@@ -49,6 +50,17 @@ def _safe_translate_station(station_name):
 
 rail_station.translate_station = _safe_translate_station
 rail_schedule.translate_station = _safe_translate_station
+
+# Ensure upstream rail API calls don't hang for long periods.
+_original_requests_post = rail_api.requests.post
+
+
+def _requests_post_with_timeout(*args, **kwargs):
+    kwargs.setdefault("timeout", (4, 10))
+    return _original_requests_post(*args, **kwargs)
+
+
+rail_api.requests.post = _requests_post_with_timeout
 
 
 def _has_hebrew_text(value):
@@ -99,6 +111,12 @@ def _parse_iso_datetime(value):
         return None
 
 
+def _safe_add_minutes(dt_value, minutes):
+    if dt_value is None or minutes is None:
+        return dt_value
+    return dt_value + timedelta(minutes=minutes)
+
+
 def _to_int(value):
     try:
         return int(value)
@@ -135,6 +153,52 @@ def _extract_train_realtime(train, station_id):
         "has_realtime": bool(eta_diff_times or train_position),
         "train_position": train_position,
     }
+
+
+def _coerce_time_with_date(value, date_str):
+    """Convert HH:MM to ISO datetime using date_str; keep ISO values as-is."""
+    if not value:
+        return None
+    value = str(value).strip()
+    if "T" in value:
+        return value
+    if len(value) >= 5 and ":" in value:
+        return f"{date_str}T{value[:5]}:00"
+    return None
+
+
+def _find_station_pass_time(train, station_id, date_str):
+    """
+    Find the train's timestamp and platform at the requested station.
+    Prefer stopStations (usually ISO), fallback to routeStations (often HH:MM),
+    and finally train source departure when station is train.src.
+    """
+    station_key = str(station_id)
+
+    for stop in train.data.get("stopStations", []) or []:
+        if str(stop.get("stationId")) != station_key:
+            continue
+        return {
+            "time": stop.get("departureTime") or stop.get("arrivalTime"),
+            "platform": stop.get("platform"),
+        }
+
+    for stop in train.data.get("routeStations", []) or []:
+        if str(stop.get("stationId")) != station_key:
+            continue
+        raw_time = stop.get("departureTime") or stop.get("arrivalTime")
+        return {
+            "time": _coerce_time_with_date(raw_time, date_str),
+            "platform": stop.get("platform"),
+        }
+
+    if str(train.src) == station_key:
+        return {
+            "time": train.departure,
+            "platform": train.platform,
+        }
+
+    return None
 
 
 def _board_key(line_start, line_end, departure_time, train_number=None):
@@ -224,6 +288,7 @@ def route_to_dict(route):
     """Convert TrainRoute and TrainRoutePart to dict for JSON serialization."""
     trains = []
     for t in route.trains:
+        realtime = _extract_train_realtime(t, t.src)
         stops = []
         raw_stops = t.data.get("stopStations", [])
 
@@ -275,6 +340,8 @@ def route_to_dict(route):
                 "dst": dst_name,
                 "platform": t.platform,
                 "dst_platform": t.dst_platform,
+                "delay_minutes": realtime.get("delay_minutes"),
+                "has_realtime": realtime.get("has_realtime"),
                 "stops": stops,
             }
         )
@@ -284,6 +351,20 @@ def route_to_dict(route):
         "end_time": route.end_time,
         "trains": trains,
     }
+
+
+def _filter_routes_from_request_time(routes, date_str, time_str):
+    """Drop routes that start before the user-requested date/time."""
+    requested_dt = _parse_iso_datetime(f"{date_str}T{time_str}:00")
+    if requested_dt is None:
+        return routes
+
+    filtered = []
+    for route in routes:
+        start_dt = _parse_iso_datetime(getattr(route, "start_time", None))
+        if start_dt is None or start_dt >= requested_dt:
+            filtered.append(route)
+    return filtered
 
 
 def _build_train_stops(train):
@@ -389,6 +470,7 @@ def get_routes(from_id, to_id):
             "Querying route %s -> %s (%s %s)", from_id, to_id, date_str, time_str
         )
         results = TrainSchedule.query(from_id, to_id, date_str, time_str)
+        results = _filter_routes_from_request_time(results, date_str, time_str)
         return jsonify([route_to_dict(r) for r in results])
     except Exception:
         try:
@@ -398,6 +480,7 @@ def get_routes(from_id, to_id):
                 date_str,
                 time_str,
             )
+            results = _filter_routes_from_request_time(results, date_str, time_str)
             return jsonify([route_to_dict(r) for r in results])
         except Exception as exc:
             app.logger.exception("Error fetching route schedules")
@@ -434,7 +517,7 @@ def get_station_board(station_id):
             if hub in available_station_ids and str(hub) != str(station_id)
         ]
         if fast_mode:
-            hubs = hubs[:20]
+            hubs = hubs[:12]
 
         def query_hub(hub):
             departures = []
@@ -442,123 +525,102 @@ def get_station_board(station_id):
                 results = TrainSchedule.query(station_id, hub, date_str, time_str)
                 for route in results:
                     for train in route.trains:
-                        found_at_station = False
-                        for stop in train.data.get("stopStations", []):
-                            if str(stop.get("stationId")) != str(station_id):
+                        station_pass = _find_station_pass_time(train, station_id, date_str)
+                        if not station_pass:
+                            continue
+
+                        train_num = train.data.get("trainNumber")
+                        departure_time = station_pass.get("time")
+                        departure_dt = _parse_iso_datetime(departure_time)
+                        realtime = _extract_train_realtime(train, station_id)
+                        effective_departure_dt = _safe_add_minutes(
+                            departure_dt,
+                            realtime["delay_minutes"],
+                        )
+                        effective_departure_time = (
+                            effective_departure_dt.isoformat()
+                            if effective_departure_dt
+                            else departure_time
+                        )
+
+                        if only_upcoming and effective_departure_dt:
+                            if effective_departure_dt < now or effective_departure_dt > max_time:
                                 continue
-                            found_at_station = True
 
-                            train_num = train.data.get("trainNumber")
-                            departure_time = stop.get("departureTime") or stop.get("arrivalTime")
-                            departure_dt = _parse_iso_datetime(departure_time)
+                        eta_minutes = None
+                        if departure_dt:
+                            eta_minutes = int((departure_dt - now).total_seconds() // 60)
+                        effective_eta_minutes = eta_minutes
+                        if effective_departure_dt is not None:
+                            effective_eta_minutes = int((effective_departure_dt - now).total_seconds() // 60)
+                        stops = _build_train_stops(train)
+                        line_src = stops[0]["name"] if stops else get_station_name(train.src)
+                        line_dst = stops[-1]["name"] if stops else get_station_name(train.dst)
+                        line_name = _line_name_from_stops(
+                            stops,
+                            line_src,
+                            line_dst,
+                        )
 
-                            if only_upcoming and departure_dt:
-                                if departure_dt < now or departure_dt > max_time:
-                                    continue
-
-                            realtime = _extract_train_realtime(train, station_id)
-                            eta_minutes = None
-                            if departure_dt:
-                                eta_minutes = int((departure_dt - now).total_seconds() // 60)
-                            effective_eta_minutes = eta_minutes
-                            if eta_minutes is not None and realtime["delay_minutes"] is not None:
-                                effective_eta_minutes = eta_minutes + realtime["delay_minutes"]
-                            stops = _build_train_stops(train)
-                            line_src = stops[0]["name"] if stops else get_station_name(train.src)
-                            line_dst = stops[-1]["name"] if stops else get_station_name(train.dst)
-                            line_name = _line_name_from_stops(
-                                stops,
-                                line_src,
-                                line_dst,
-                            )
-
-                            departures.append(
-                                {
-                                    "unique_key": _board_key(
-                                        line_src,
-                                        line_dst,
-                                        departure_time,
-                                        train_num,
-                                    ),
-                                    "train_number": train_num,
-                                    "src": line_src,
-                                    "dest": line_dst,
-                                    "line_name": line_name,
-                                    "time": departure_time,
-                                    "platform": stop.get("platform"),
-                                    "eta_minutes": eta_minutes,
-                                    "effective_eta_minutes": effective_eta_minutes,
-                                    "delay_minutes": realtime["delay_minutes"],
-                                    "has_realtime": realtime["has_realtime"],
-                                    "train_position": realtime["train_position"],
-                                    "stops": stops,
-                                }
-                            )
-
-                        # In many API responses, source station is not listed in stopStations.
-                        if not found_at_station and str(train.src) == str(station_id):
-                            train_num = train.data.get("trainNumber")
-                            departure_time = train.departure
-                            departure_dt = _parse_iso_datetime(departure_time)
-
-                            if only_upcoming and departure_dt:
-                                if departure_dt < now or departure_dt > max_time:
-                                    continue
-
-                            realtime = _extract_train_realtime(train, station_id)
-                            eta_minutes = None
-                            if departure_dt:
-                                eta_minutes = int((departure_dt - now).total_seconds() // 60)
-                            effective_eta_minutes = eta_minutes
-                            if eta_minutes is not None and realtime["delay_minutes"] is not None:
-                                effective_eta_minutes = eta_minutes + realtime["delay_minutes"]
-                            stops = _build_train_stops(train)
-                            line_src = stops[0]["name"] if stops else get_station_name(train.src)
-                            line_dst = stops[-1]["name"] if stops else get_station_name(train.dst)
-                            line_name = _line_name_from_stops(
-                                stops,
-                                line_src,
-                                line_dst,
-                            )
-
-                            departures.append(
-                                {
-                                    "unique_key": _board_key(
-                                        line_src,
-                                        line_dst,
-                                        departure_time,
-                                        train_num,
-                                    ),
-                                    "train_number": train_num,
-                                    "src": line_src,
-                                    "dest": line_dst,
-                                    "line_name": line_name,
-                                    "time": departure_time,
-                                    "platform": train.platform,
-                                    "eta_minutes": eta_minutes,
-                                    "effective_eta_minutes": effective_eta_minutes,
-                                    "delay_minutes": realtime["delay_minutes"],
-                                    "has_realtime": realtime["has_realtime"],
-                                    "train_position": realtime["train_position"],
-                                    "stops": stops,
-                                }
-                            )
+                        departures.append(
+                            {
+                                "unique_key": _board_key(
+                                    line_src,
+                                    line_dst,
+                                    departure_time,
+                                    train_num,
+                                ),
+                                "train_number": train_num,
+                                "src": line_src,
+                                "dest": line_dst,
+                                "line_name": line_name,
+                                "time": departure_time,
+                                "effective_time": effective_departure_time,
+                                "platform": station_pass.get("platform") or train.platform,
+                                "eta_minutes": eta_minutes,
+                                "effective_eta_minutes": effective_eta_minutes,
+                                "delay_minutes": realtime["delay_minutes"],
+                                "has_realtime": realtime["has_realtime"],
+                                "train_position": realtime["train_position"],
+                                "stops": stops,
+                            }
+                        )
             except Exception:
                 return []
             return departures
 
-        all_departures = []
-        executor = ThreadPoolExecutor(max_workers=10 if fast_mode else 12)
-        futures = [executor.submit(query_hub, hub) for hub in hubs]
-        try:
-            for future in as_completed(futures, timeout=12 if fast_mode else 20):
-                all_departures.extend(future.result())
-        except FuturesTimeoutError:
-            pass
-        finally:
-            for future in futures:
-                future.cancel()
-            executor.shutdown(wait=False, cancel_futures=True)
+        def collect_departures(hub_ids, max_workers, wait_timeout):
+            rows = []
+            executor = ThreadPoolExecutor(max_workers=max_workers)
+            futures = [executor.submit(query_hub, hub) for hub in hub_ids]
+            try:
+                for future in as_completed(futures, timeout=wait_timeout):
+                    rows.extend(future.result())
+            except FuturesTimeoutError:
+                pass
+            finally:
+                for future in futures:
+                    future.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
+            return rows
+
+        all_departures = collect_departures(
+            hubs,
+            max_workers=8 if fast_mode else 12,
+            wait_timeout=8 if fast_mode else 20,
+        )
+
+        # If fast mode returned nothing, retry once with broader coverage.
+        if fast_mode and not all_departures:
+            expanded_hubs = [
+                hub for hub in BOARD_HUBS
+                if hub in available_station_ids and str(hub) != str(station_id)
+            ]
+            all_departures = collect_departures(
+                expanded_hubs,
+                max_workers=10,
+                wait_timeout=14,
+            )
 
         deduped = {}
         for row in all_departures:
