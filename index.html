@@ -591,15 +591,15 @@
                                 <span class="board-pill">רכבת ${row.train_number || '-'}</span>
                             </div>
                         </div>
-                        <div class="board-time">
+                        <div class="board-time" style="min-width:72px;flex:0 0 72px;">
                             <span class="eta-minutes">${row.effective_eta_minutes ?? row.eta_minutes ?? '?'}</span>
-                            <span class="eta-unit">דק'</span>
+                            <span class="eta-unit" style="white-space:nowrap;">דק'</span>
                             ${(() => {
                                 const status = realtimeDelayLabel(row.delay_minutes, row.has_realtime);
-                                return status ? `<span class="board-delay ${status.cls}">${status.text}</span>` : '';
+                                return status ? `<span class="board-delay ${status.cls}" style="white-space:nowrap;">${status.text}</span>` : '';
                             })()}
                         </div>
-                        <i data-lucide="chevron-down" size="16"></i>
+                        <i data-lucide="chevron-down" size="16" style="flex:0 0 auto;"></i>
                     </button>
                     <div id="board-details-${idx}" class="board-details">
                         <div class="board-details-head">תחנות במסלול</div>
