@@ -1453,11 +1453,15 @@ input:focus {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
+        justify-content: flex-start;
         gap: 6px 8px;
     }
 
     .trip-head .badge {
         max-width: 100%;
+        margin: 0;
+        white-space: normal;
+        overflow-wrap: anywhere;
     }
 
     .board-tags {
