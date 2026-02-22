@@ -1,6 +1,7 @@
-﻿from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from datetime import datetime, timedelta
 import time
+from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, request, send_from_directory
 from israelrailapi import TrainSchedule
@@ -9,6 +10,7 @@ import israelrailapi.schedule as rail_schedule
 import israelrailapi.train_station as rail_station
 
 app = Flask(__name__)
+IL_TZ = ZoneInfo("Asia/Jerusalem")
 
 STATION_MAP = {
     680: "Jerusalem Yitzhak Navon",
@@ -87,19 +89,24 @@ def _is_valid_time(value):
         return False
 
 
+def _now_local():
+    # Use Israel local time regardless of server runtime timezone.
+    return datetime.now(IL_TZ).replace(tzinfo=None)
+
+
 def _normalize_date(value):
     if _is_valid_date(value):
         return value
-    return datetime.now().strftime("%Y-%m-%d")
+    return _now_local().strftime("%Y-%m-%d")
 
 
 def _normalize_time(value):
     if not value:
-        return datetime.now().strftime("%H:%M")
+        return _now_local().strftime("%H:%M")
     candidate = value[:5]
     if _is_valid_time(candidate):
         return candidate
-    return datetime.now().strftime("%H:%M")
+    return _now_local().strftime("%H:%M")
 
 
 def _parse_iso_datetime(value):
@@ -461,7 +468,7 @@ def get_stations():
 
 @app.route("/api/routes/<int:from_id>/<int:to_id>")
 def get_routes(from_id, to_id):
-    now = datetime.now()
+    now = _now_local()
     date_str = _normalize_date(request.args.get("date", now.strftime("%Y-%m-%d")))
     time_str = _normalize_time(request.args.get("time", now.strftime("%H:%M")))
 
@@ -490,7 +497,7 @@ def get_routes(from_id, to_id):
 @app.route("/api/station-board/<station_id>")
 def get_station_board(station_id):
     try:
-        now = datetime.now()
+        now = _now_local()
         date_str = now.strftime("%Y-%m-%d")
         minutes_window_raw = request.args.get("minutes", "30")
         only_upcoming = request.args.get("upcoming", "1") != "0"
@@ -652,6 +659,7 @@ def get_station_board(station_id):
 if __name__ == "__main__":
     print("Server running at: http://127.0.0.1:5000")
     app.run(debug=True, port=5000)
+
 
 
 
