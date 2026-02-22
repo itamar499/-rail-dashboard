@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.itamar.raildashboard',
-  appName: 'Rail Dashboard',
+  appName: 'Mesilot',
   webDir: 'web',
   server: {
     url: 'https://mesilot.vercel.app',
