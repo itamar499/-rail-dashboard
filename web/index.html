@@ -816,14 +816,20 @@
 
         ['from-input', 'to-input', 'board-station-input'].forEach((id) => {
             const input = document.getElementById(id);
+            const selectAllIfHasValue = () => {
+                if (!input.value || !input.value.trim()) return;
+                input.select();
+            };
             input.addEventListener('focus', () => {
                 if (window.matchMedia('(max-width: 768px)').matches) {
                     setTimeout(() => {
                         input.scrollIntoView({ block: 'center', behavior: 'smooth' });
                     }, 80);
                 }
+                setTimeout(selectAllIfHasValue, 0);
                 showSuggestions(input);
             });
+            input.addEventListener('click', selectAllIfHasValue);
             input.addEventListener('input', () => showSuggestions(input));
             input.addEventListener('blur', () => setTimeout(hideSuggestions, 120));
         });
