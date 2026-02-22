@@ -85,6 +85,13 @@
             </div>
 
             <p id="search-hint" class="hint">טוען תחנות...</p>
+            <div id="recent-searches" class="recent-searches" hidden>
+                <div class="recent-searches-head">
+                    <strong>חיפושים אחרונים</strong>
+                    <button id="clear-recent-searches" class="btn-link" type="button">נקה</button>
+                </div>
+                <div id="recent-searches-list" class="recent-searches-list"></div>
+            </div>
         </section>
 
         <section class="results-panel">
@@ -157,6 +164,8 @@
         let activeSuggestionInput = null;
         const MIN_CHARS_FOR_SUGGESTIONS = 3;
         const THEME_STORAGE_KEY = 'rail_theme_mode';
+        const RECENT_ROUTE_SEARCHES_KEY = 'rail_recent_route_searches';
+        const MAX_RECENT_ROUTE_SEARCHES = 6;
 
         function stationLabel(station) {
             if (station.heb && station.eng) return `${station.heb} | ${station.eng} (${station.id})`;
@@ -391,6 +400,71 @@
                 console.error(error);
                 hint.textContent = 'שגיאה בטעינת תחנות. רענן את הדף.';
             }
+        }
+
+        function loadRecentRouteSearches() {
+            try {
+                const raw = localStorage.getItem(RECENT_ROUTE_SEARCHES_KEY);
+                if (!raw) return [];
+                const parsed = JSON.parse(raw);
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (_) {
+                return [];
+            }
+        }
+
+        function saveRecentRouteSearches(items) {
+            localStorage.setItem(RECENT_ROUTE_SEARCHES_KEY, JSON.stringify(items.slice(0, MAX_RECENT_ROUTE_SEARCHES)));
+        }
+
+        function pushRecentRouteSearch(search) {
+            const existing = loadRecentRouteSearches();
+            const key = `${search.from_id}-${search.to_id}-${search.date}-${search.time}-${search.force_all_day ? 1 : 0}`;
+            const deduped = existing.filter(item =>
+                `${item.from_id}-${item.to_id}-${item.date}-${item.time}-${item.force_all_day ? 1 : 0}` !== key
+            );
+            deduped.unshift(search);
+            saveRecentRouteSearches(deduped);
+            renderRecentRouteSearches();
+        }
+
+        function applyRecentRouteSearch(search) {
+            document.getElementById('from-input').value = search.from_label;
+            document.getElementById('to-input').value = search.to_label;
+            document.getElementById('date-picker').value = search.date;
+            if (!search.force_all_day && search.time) {
+                document.getElementById('time-picker').value = search.time;
+            }
+            runSearch(Boolean(search.force_all_day));
+        }
+
+        function renderRecentRouteSearches() {
+            const container = document.getElementById('recent-searches');
+            const list = document.getElementById('recent-searches-list');
+            const items = loadRecentRouteSearches();
+
+            if (!items.length) {
+                container.hidden = true;
+                list.innerHTML = '';
+                return;
+            }
+
+            container.hidden = false;
+            list.innerHTML = items.map((item, idx) => `
+                <button type="button" class="recent-search-chip" data-recent-index="${idx}">
+                    <span class="recent-route">${item.to_name} ← ${item.from_name}</span>
+                    <span class="recent-meta">${item.date} · ${item.force_all_day ? 'כל היום' : item.time}</span>
+                </button>
+            `).join('');
+
+            list.querySelectorAll('.recent-search-chip').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const index = Number(btn.dataset.recentIndex);
+                    const search = items[index];
+                    if (!search) return;
+                    applyRecentRouteSearch(search);
+                });
+            });
         }
 
         function filteredStations(query) {
@@ -707,6 +781,18 @@
 
             try {
                 const routes = await fetchJson(url);
+                pushRecentRouteSearch({
+                    from_id: fromStation.id,
+                    to_id: toStation.id,
+                    from_name: fromStation.name,
+                    to_name: toStation.name,
+                    from_label: stationLabel(fromStation),
+                    to_label: stationLabel(toStation),
+                    date,
+                    time,
+                    force_all_day: Boolean(forceAllDay),
+                    saved_at: Date.now(),
+                });
                 setResultsHeader(fromStation.name, toStation.name, routes.length);
                 renderResults(routes);
                 hint.textContent = forceAllDay ? 'מציג את כל הנסיעות ליום הנבחר.' : 'מציג נסיעות החל מהשעה שנבחרה.';
@@ -803,6 +889,10 @@
         document.getElementById('search-btn').addEventListener('click', () => runSearch(false));
         document.getElementById('all-day-btn').addEventListener('click', () => runSearch(true));
         document.getElementById('board-btn').addEventListener('click', runStationRealtime);
+        document.getElementById('clear-recent-searches').addEventListener('click', () => {
+            localStorage.removeItem(RECENT_ROUTE_SEARCHES_KEY);
+            renderRecentRouteSearches();
+        });
 
         document.getElementById('from-input').addEventListener('keydown', (e) => {
             if (e.key === 'Enter') runSearch(false);
@@ -851,6 +941,7 @@
 
         initThemeToggle();
         initDateTime();
+        renderRecentRouteSearches();
         loadStations().then(() => {
             document.getElementById('search-hint').textContent = 'בחר תחנת מוצא ותחנת יעד כדי להתחיל חיפוש.';
         }).finally(() => {

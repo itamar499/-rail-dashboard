@@ -252,6 +252,64 @@ input:focus {
     font-size: 0.9rem;
 }
 
+.recent-searches {
+    margin-top: 10px;
+    border: 1px solid #dbe9f7;
+    background: #f7fbff;
+    border-radius: 12px;
+    padding: 8px;
+}
+
+.recent-searches-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    color: #355a7a;
+    font-size: 0.86rem;
+}
+
+.btn-link {
+    border: 0;
+    background: transparent;
+    color: var(--brand);
+    font-weight: 700;
+    cursor: pointer;
+    padding: 2px 4px;
+}
+
+.recent-searches-list {
+    display: grid;
+    gap: 6px;
+}
+
+.recent-search-chip {
+    width: 100%;
+    border: 1px solid #d8e7f6;
+    background: #fff;
+    border-radius: 10px;
+    padding: 7px 10px;
+    text-align: right;
+    display: grid;
+    gap: 2px;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.recent-route {
+    color: var(--ink);
+    font-weight: 700;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.recent-meta {
+    color: var(--ink-soft);
+    font-size: 0.8rem;
+}
+
 .results-panel {
     padding: 16px;
 }
