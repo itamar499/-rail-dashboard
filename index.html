@@ -521,20 +521,42 @@
                 const transfers = transferRows(route);
                 const stopCount = timeline.filter(item => item.type === 'stop').length;
                 const durationMinutes = minutesBetween(route.start_time, route.end_time);
-                const durationLabel = formatDurationMinutes(durationMinutes);
+                const durationShort = durationMinutes === null ? '--' : `${durationMinutes} דק'`;
                 const dayLabel = tripDayLabel(route.start_time);
                 const realtimeStatus = routeRealtimeLabel(route);
+                const firstTrain = Array.isArray(route.trains) && route.trains.length ? route.trains[0] : null;
+                const lastTrain = Array.isArray(route.trains) && route.trains.length ? route.trains[route.trains.length - 1] : null;
+                const transferCount = Math.max(0, (route.trains?.length || 1) - 1);
+                const transferLabel = transferCount === 0 ? 'ללא החלפות' : `${transferCount} החלפות`;
+                const startPlatform = firstTrain?.platform || '-';
+                const endPlatform = lastTrain?.dst_platform || '-';
+                const trainNumber = firstTrain?.train_number || '-';
                 return `
                     <article class="trip-card">
                         <button class="trip-head" onclick="toggleDetails(${idx})">
-                            <strong class="trip-time">${formatTime(route.start_time)}</strong>
-                            <span class="arrow">→</span>
-                            <strong class="trip-time">${formatTime(route.end_time)}</strong>
-                            <span class="badge subtle trip-day${dayLabel ? '' : ' trip-day-empty'}">${dayLabel || '&nbsp;'}</span>
-                            <span class="badge subtle trip-stat">${stopCount} תחנות</span>
-                            <span class="badge subtle trip-stat">${durationLabel}</span>
-                            ${realtimeStatus ? `<span class="board-delay ${realtimeStatus.cls}">${realtimeStatus.text}</span>` : ''}
-                            <i data-lucide="chevron-down" size="16"></i>
+                            <div class="trip-topline">
+                                <span class="trip-train-number">רכבת ${trainNumber}</span>
+                                <span class="badge subtle trip-day${dayLabel ? '' : ' trip-day-empty'}">${dayLabel || '&nbsp;'}</span>
+                            </div>
+                            <div class="trip-mainline">
+                                <div class="trip-side">
+                                    <strong class="trip-time">${formatTime(route.start_time)}</strong>
+                                    <span class="trip-platform">רציף ${startPlatform}</span>
+                                </div>
+                                <div class="trip-center">
+                                    <span class="trip-duration-pill">${durationShort}</span>
+                                    <span class="trip-transfer-label">${transferLabel}</span>
+                                </div>
+                                <div class="trip-side">
+                                    <strong class="trip-time">${formatTime(route.end_time)}</strong>
+                                    <span class="trip-platform">רציף ${endPlatform}</span>
+                                </div>
+                            </div>
+                            <div class="trip-bottomline">
+                                <span class="badge subtle trip-stat">${stopCount} תחנות</span>
+                                ${realtimeStatus ? `<span class="board-delay ${realtimeStatus.cls}">${realtimeStatus.text}</span>` : '<span></span>'}
+                            </div>
+                            <i data-lucide="chevron-down" size="16" class="trip-expand"></i>
                         </button>
                         <div id="trip-details-${idx}" class="trip-details">
                             ${transfers.map((t, transferIdx) => `

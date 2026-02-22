@@ -328,23 +328,86 @@ input:focus {
     width: 100%;
     border: 0;
     background: #f4f9ff;
-    padding: 12px 12px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    padding: 10px 12px 12px;
+    display: grid;
+    gap: 8px;
     font-family: inherit;
     cursor: pointer;
+    text-align: right;
+    position: relative;
 }
 
-.trip-head i {
-    margin-inline-start: auto;
-    flex: 0 0 auto;
+.trip-expand {
+    position: absolute;
+    inset-inline-start: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #1d5f97;
+}
+
+.trip-topline {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-inline-start: 24px;
+}
+
+.trip-train-number {
+    color: #214768;
+    font-weight: 700;
+    font-size: 0.92rem;
+}
+
+.trip-mainline {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 8px;
+    padding-inline-start: 24px;
+}
+
+.trip-side {
+    display: grid;
+    gap: 2px;
+}
+
+.trip-center {
+    display: grid;
+    justify-items: center;
+    gap: 3px;
+}
+
+.trip-duration-pill {
+    border: 1px solid #b7cee3;
+    border-radius: 999px;
+    padding: 2px 12px;
+    color: #1b4f77;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.trip-transfer-label {
+    color: #1f5d8f;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.trip-platform {
+    color: #657f98;
+    font-size: 0.88rem;
+}
+
+.trip-bottomline {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-inline-start: 24px;
 }
 
 .trip-time {
     display: inline-block;
-    min-width: 48px;
-    text-align: center;
+    min-width: 54px;
+    text-align: right;
     font-variant-numeric: tabular-nums;
     font-size: 1.05rem;
     font-weight: 800;
@@ -361,7 +424,7 @@ input:focus {
 }
 
 .trip-stat {
-    min-width: 96px;
+    min-width: 80px;
     text-align: center;
 }
 
@@ -1382,7 +1445,6 @@ input:focus {
     }
 
     .trip-head {
-        gap: 8px;
         font-size: 0.96rem;
     }
 
@@ -1450,18 +1512,40 @@ input:focus {
     }
 
     .trip-head {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: flex-start;
-        gap: 6px 8px;
+        gap: 7px;
+        padding: 9px 10px 11px;
     }
 
-    .trip-head .badge {
-        max-width: 100%;
-        margin: 0;
-        white-space: normal;
-        overflow-wrap: anywhere;
+    .trip-topline,
+    .trip-mainline,
+    .trip-bottomline {
+        padding-inline-start: 22px;
+    }
+
+    .trip-mainline {
+        gap: 6px;
+    }
+
+    .trip-time {
+        min-width: 50px;
+        font-size: 0.98rem;
+    }
+
+    .trip-platform {
+        font-size: 0.82rem;
+    }
+
+    .trip-duration-pill {
+        padding: 1px 9px;
+        font-size: 0.88rem;
+    }
+
+    .trip-transfer-label {
+        font-size: 0.88rem;
+    }
+
+    .trip-train-number {
+        font-size: 0.86rem;
     }
 
     .board-tags {

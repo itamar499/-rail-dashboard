@@ -341,6 +341,7 @@ def route_to_dict(route):
 
         trains.append(
             {
+                "train_number": t.data.get("trainNumber"),
                 "departure": t.departure,
                 "arrival": t.arrival,
                 "src": src_name,
