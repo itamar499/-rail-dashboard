@@ -496,10 +496,9 @@
                     e.preventDefault();
                     selectSuggestion(btn);
                 });
-                btn.addEventListener('touchstart', (e) => {
-                    e.preventDefault();
+                btn.addEventListener('click', () => {
                     selectSuggestion(btn);
-                }, { passive: false });
+                });
             });
         }
 
