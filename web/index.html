@@ -242,6 +242,20 @@
             return { text: 'בזמן', cls: 'ontime' };
         }
 
+        function normalizeStationName(value) {
+            return String(value || '')
+                .trim()
+                .replace(/\s+/g, ' ')
+                .replace(/[–—]/g, '-')
+                .toLowerCase();
+        }
+
+        function isCurrentRealtimeStop(row, stop) {
+            const current = normalizeStationName(row?.train_position?.current_last_station);
+            const stopName = normalizeStationName(stop?.name);
+            return Boolean(current && stopName && current === stopName);
+        }
+
         function routeRealtimeLabel(route) {
             const trains = Array.isArray(route?.trains) ? route.trains : [];
             const hasRealtime = trains.some(t => t?.has_realtime);
@@ -550,7 +564,17 @@
                 return;
             }
 
-            body.innerHTML = rows.map((row, idx) => `
+            body.innerHTML = rows.map((row, idx) => {
+                const stopsHtml = Array.isArray(row.stops) ? row.stops.map(stop => {
+                            const isCurrent = isCurrentRealtimeStop(row, stop);
+                            return `
+                            <div class="stop-row${isCurrent ? ' current-station' : ''}">
+                                <span${isCurrent ? ' style="font-weight:800"' : ''}>${stop.name}</span>
+                                <strong>${formatTime(stop.time)}</strong>
+                            </div>
+                        `;
+                        }).join('') : '';
+                return `
                 <article class="trip-card board-card" style="--line-accent: ${boardLineAccent(row)}; --card-i: ${idx};">
                     <button class="board-row" onclick="toggleBoardDetails(${idx})">
                         <div class="board-main">
@@ -579,16 +603,12 @@
                     </button>
                     <div id="board-details-${idx}" class="board-details">
                         <div class="board-details-head">תחנות במסלול</div>
-                        ${Array.isArray(row.stops) ? row.stops.map(stop => `
-                            <div class="stop-row">
-                                <span>${stop.name}</span>
-                                <strong>${formatTime(stop.time)}</strong>
-                            </div>
-                        `).join('') : ''}
+                        ${stopsHtml}
                         <div class="board-meta">קו ${row.line_name || `${row.src} - ${row.dest}`}</div>
                     </div>
                 </article>
-            `).join('');
+            `;
+            }).join('');
 
             lucide.createIcons();
         }
