@@ -166,6 +166,32 @@
         const THEME_STORAGE_KEY = 'rail_theme_mode';
         const RECENT_ROUTE_SEARCHES_KEY = 'rail_recent_route_searches';
         const MAX_RECENT_ROUTE_SEARCHES = 6;
+        const ALL_DAY_INITIAL_ROUTES = 18;
+        const ALL_DAY_LOAD_MORE_STEP = 18;
+        let userEditedTimePicker = false;
+        let allDayRenderState = {
+            routes: [],
+            visibleCount: 0,
+        };
+
+        function dateInputValue(dt) {
+            const year = dt.getFullYear();
+            const month = String(dt.getMonth() + 1).padStart(2, '0');
+            const day = String(dt.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        function isFutureDateInput(dateValue) {
+            if (!dateValue) return false;
+            return dateValue > dateInputValue(new Date());
+        }
+
+        function currentTimeValue() {
+            const now = new Date();
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            return `${hh}:${mm}`;
+        }
 
         function stationLabel(station) {
             if (station.heb && station.eng) return `${station.heb} | ${station.eng} (${station.id})`;
@@ -516,6 +542,9 @@
             document.getElementById('date-picker').value = search.date;
             if (!search.force_all_day && search.time) {
                 document.getElementById('time-picker').value = search.time;
+                userEditedTimePicker = true;
+            } else {
+                userEditedTimePicker = false;
             }
             runSearch(Boolean(search.force_all_day));
         }
@@ -664,29 +693,22 @@
             document.getElementById('results-count').textContent = `${count} נסיעות`;
         }
 
-        function renderResults(routes) {
-            const body = document.getElementById('results-body');
-            if (!routes.length) {
-                body.innerHTML = '<div class="empty-state">לא נמצאו נסיעות עבור הבחירה הזו.</div>';
-                return;
-            }
-
-            body.innerHTML = routes.map((route, idx) => {
-                const timeline = stopsWithTransferMarkers(route);
-                const transfers = transferRows(route);
-                const stopCount = timeline.filter(item => item.type === 'stop').length;
-                const durationMinutes = minutesBetween(route.start_time, route.end_time);
-                const durationShort = durationMinutes === null ? '--' : `${durationMinutes} דק'`;
-                const dayLabel = tripDayLabel(route.start_time);
-                const realtimeStatus = routeRealtimeLabel(route);
-                const firstTrain = Array.isArray(route.trains) && route.trains.length ? route.trains[0] : null;
-                const lastTrain = Array.isArray(route.trains) && route.trains.length ? route.trains[route.trains.length - 1] : null;
-                const transferCount = Math.max(0, (route.trains?.length || 1) - 1);
-                const transferLabel = transferCount === 0 ? 'ללא החלפות' : `${transferCount} החלפות`;
-                const startPlatform = firstTrain?.platform || '-';
-                const endPlatform = lastTrain?.dst_platform || '-';
-                const trainNumber = firstTrain?.train_number || '-';
-                return `
+        function routeCardHtml(route, idx) {
+            const timeline = stopsWithTransferMarkers(route);
+            const transfers = transferRows(route);
+            const stopCount = timeline.filter(item => item.type === 'stop').length;
+            const durationMinutes = minutesBetween(route.start_time, route.end_time);
+            const durationShort = durationMinutes === null ? '--' : `${durationMinutes} דק'`;
+            const dayLabel = tripDayLabel(route.start_time);
+            const realtimeStatus = routeRealtimeLabel(route);
+            const firstTrain = Array.isArray(route.trains) && route.trains.length ? route.trains[0] : null;
+            const lastTrain = Array.isArray(route.trains) && route.trains.length ? route.trains[route.trains.length - 1] : null;
+            const transferCount = Math.max(0, (route.trains?.length || 1) - 1);
+            const transferLabel = transferCount === 0 ? 'ללא החלפות' : `${transferCount} החלפות`;
+            const startPlatform = firstTrain?.platform || '-';
+            const endPlatform = lastTrain?.dst_platform || '-';
+            const trainNumber = firstTrain?.train_number || '-';
+            return `
                     <article class="trip-card">
                         <button class="trip-head" onclick="toggleDetails(${idx})">
                             <div class="trip-topline">
@@ -736,7 +758,74 @@
                         </div>
                     </article>
                 `;
+        }
+
+        function routesSliceHtml(routes, fromIdx, toIdxExclusive) {
+            return routes.slice(fromIdx, toIdxExclusive).map((route, offset) => {
+                const idx = fromIdx + offset;
+                return routeCardHtml(route, idx);
             }).join('');
+        }
+
+        function allDayLoadMoreControlHtml() {
+            const remaining = allDayRenderState.routes.length - allDayRenderState.visibleCount;
+            if (remaining <= 0) return '';
+            return `
+                <div id="routes-load-more-wrap" style="display:flex;justify-content:center;align-items:center;gap:12px;margin-top:12px;">
+                    <button id="routes-load-more-btn" type="button" class="btn-secondary">טען עוד (${remaining} נותרו)</button>
+                </div>
+            `;
+        }
+
+        function appendAllDayRoutesChunk(size) {
+            const body = document.getElementById('results-body');
+            const total = allDayRenderState.routes.length;
+            const fromIdx = allDayRenderState.visibleCount;
+            const toIdx = Math.min(total, fromIdx + size);
+            if (toIdx <= fromIdx) return;
+
+            body.insertAdjacentHTML('beforeend', routesSliceHtml(allDayRenderState.routes, fromIdx, toIdx));
+            allDayRenderState.visibleCount = toIdx;
+        }
+
+        function renderAllDayLoadMoreControl() {
+            const body = document.getElementById('results-body');
+            const existing = document.getElementById('routes-load-more-wrap');
+            if (existing) existing.remove();
+
+            const controlHtml = allDayLoadMoreControlHtml();
+            if (!controlHtml) return;
+            body.insertAdjacentHTML('beforeend', controlHtml);
+
+            const btn = document.getElementById('routes-load-more-btn');
+            if (!btn) return;
+            btn.addEventListener('click', () => {
+                appendAllDayRoutesChunk(ALL_DAY_LOAD_MORE_STEP);
+                renderAllDayLoadMoreControl();
+                lucide.createIcons();
+            });
+        }
+
+        function renderResults(routes, options = {}) {
+            const forceAllDay = Boolean(options.forceAllDay);
+            const body = document.getElementById('results-body');
+            if (!routes.length) {
+                allDayRenderState = { routes: [], visibleCount: 0 };
+                body.innerHTML = '<div class="empty-state">לא נמצאו נסיעות עבור הבחירה הזו.</div>';
+                return;
+            }
+
+            if (!forceAllDay) {
+                allDayRenderState = { routes: [], visibleCount: 0 };
+                body.innerHTML = routesSliceHtml(routes, 0, routes.length);
+                lucide.createIcons();
+                return;
+            }
+
+            allDayRenderState = { routes: routes.slice(), visibleCount: 0 };
+            body.innerHTML = '';
+            appendAllDayRoutesChunk(ALL_DAY_INITIAL_ROUTES);
+            renderAllDayLoadMoreControl();
 
             lucide.createIcons();
         }
@@ -855,8 +944,12 @@
                 return;
             }
 
-            const date = document.getElementById('date-picker').value;
-            const time = forceAllDay ? '00:00' : document.getElementById('time-picker').value;
+            const datePicker = document.getElementById('date-picker');
+            const timePicker = document.getElementById('time-picker');
+            const date = datePicker.value || dateInputValue(new Date());
+            const time = forceAllDay
+                ? '00:00'
+                : (isFutureDateInput(date) && !userEditedTimePicker ? '00:00' : (timePicker.value || currentTimeValue()));
             const url = `/api/routes/${fromStation.id}/${toStation.id}?date=${date}&time=${time}`;
 
             document.getElementById('results-header').style.display = 'flex';
@@ -880,7 +973,7 @@
                     saved_at: Date.now(),
                 });
                 setResultsHeader(fromStation.name, toStation.name, routes.length);
-                renderResults(routes);
+                renderResults(routes, { forceAllDay: Boolean(forceAllDay) });
                 hint.textContent = forceAllDay ? 'מציג את כל הנסיעות ליום הנבחר.' : 'מציג נסיעות החל מהשעה שנבחרה.';
             } catch (error) {
                 console.error(error);
@@ -933,10 +1026,8 @@
 
         function initDateTime() {
             const now = new Date();
-            document.getElementById('date-picker').valueAsDate = now;
-            const hh = String(now.getHours()).padStart(2, '0');
-            const mm = String(now.getMinutes()).padStart(2, '0');
-            document.getElementById('time-picker').value = `${hh}:${mm}`;
+            document.getElementById('date-picker').value = dateInputValue(now);
+            document.getElementById('time-picker').value = currentTimeValue();
         }
 
         function applyThemeMode(mode) {
@@ -975,6 +1066,18 @@
         document.getElementById('search-btn').addEventListener('click', () => runSearch(false));
         document.getElementById('all-day-btn').addEventListener('click', () => runSearch(true));
         document.getElementById('board-btn').addEventListener('click', runStationRealtime);
+        document.getElementById('time-picker').addEventListener('input', () => {
+            userEditedTimePicker = true;
+        });
+        document.getElementById('date-picker').addEventListener('change', (e) => {
+            const selectedDate = e.target.value;
+            if (!selectedDate) return;
+            if (isFutureDateInput(selectedDate) && !userEditedTimePicker) {
+                document.getElementById('time-picker').value = '00:00';
+            } else if (!userEditedTimePicker) {
+                document.getElementById('time-picker').value = currentTimeValue();
+            }
+        });
         document.getElementById('clear-recent-searches').addEventListener('click', () => {
             localStorage.removeItem(RECENT_ROUTE_SEARCHES_KEY);
             renderRecentRouteSearches();
