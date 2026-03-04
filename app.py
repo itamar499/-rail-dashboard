@@ -812,8 +812,9 @@ def get_routes(from_id, to_id):
                 time_str,
                 all_day=all_day,
             )
-            if fallback_routes:
-                return jsonify(fallback_routes)
+            # Never bubble up 403 to the UI when the upstream rail API is blocked.
+            # If fallback has no matching trips, return an empty successful result.
+            return jsonify(fallback_routes)
         app.logger.exception("Error fetching route schedules")
         return jsonify({"error": str(exc), "details": "Error fetching schedules"}), 500
 
