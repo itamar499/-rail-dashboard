@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from datetime import datetime, timedelta
+import json
+import os
 import re
 import threading
 import time
@@ -510,6 +512,143 @@ def _query_routes_once(from_id, to_id, date_str, time_str):
         )
 
 
+_GTFS_FALLBACK_CACHE = {"loaded": False, "data": None}
+
+
+def _is_rail_forbidden_error(exc):
+    message = str(exc or "")
+    return "403" in message and "searchTrain" in message
+
+
+def _load_gtfs_fallback_data():
+    if _GTFS_FALLBACK_CACHE["loaded"]:
+        return _GTFS_FALLBACK_CACHE["data"]
+
+    data_path = os.path.join(app.root_path, "assets", "rail_gtfs_compact.json")
+    if not os.path.exists(data_path):
+        _GTFS_FALLBACK_CACHE["loaded"] = True
+        _GTFS_FALLBACK_CACHE["data"] = None
+        return None
+
+    with open(data_path, "r", encoding="utf-8") as fp:
+        data = json.load(fp)
+    _GTFS_FALLBACK_CACHE["loaded"] = True
+    _GTFS_FALLBACK_CACHE["data"] = data
+    return data
+
+
+def _seconds_from_hhmm(time_str):
+    hour, minute = [int(part) for part in str(time_str)[:5].split(":")]
+    return (hour * 3600) + (minute * 60)
+
+
+def _iso_from_date_and_seconds(base_date, seconds_total):
+    day_offset, sec_in_day = divmod(int(seconds_total), 24 * 3600)
+    ts = datetime.combine(base_date, datetime.min.time()) + timedelta(days=day_offset, seconds=sec_in_day)
+    return ts.isoformat(timespec="seconds")
+
+
+def _service_active_on_date(service_row, date_obj):
+    if not service_row:
+        return False
+    ymd = date_obj.strftime("%Y%m%d")
+    if ymd < service_row.get("start", "") or ymd > service_row.get("end", ""):
+        return False
+    # Python Monday=0 ... Sunday=6, which matches the order in compact data.
+    return bool(service_row.get("days", [0, 0, 0, 0, 0, 0, 0])[date_obj.weekday()])
+
+
+def _query_routes_gtfs_fallback(from_id, to_id, date_str, time_str, all_day=False, limit=25):
+    payload = _load_gtfs_fallback_data()
+    if not payload:
+        return []
+
+    station_map = payload.get("station_map", {})
+    stops_by_id = payload.get("stops", {})
+    calendar = payload.get("calendar", {})
+    trips = payload.get("trips", [])
+
+    from_station = station_map.get(str(from_id))
+    to_station = station_map.get(str(to_id))
+    if not from_station or not to_station:
+        return []
+
+    requested_seconds = _seconds_from_hhmm(time_str)
+    requested_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    from_name = get_station_name(from_id)
+    to_name = get_station_name(to_id)
+
+    routes = []
+    for trip in trips:
+        if not _service_active_on_date(calendar.get(trip.get("svc")), requested_date):
+            continue
+
+        compact_stops = trip.get("stops") or []
+        from_idx = None
+        to_idx = None
+        for idx, stop_row in enumerate(compact_stops):
+            stop_id = stop_row[0]
+            if stop_id == from_station and from_idx is None:
+                from_idx = idx
+            if stop_id == to_station:
+                to_idx = idx
+                if from_idx is not None and to_idx > from_idx:
+                    break
+        if from_idx is None or to_idx is None or to_idx <= from_idx:
+            continue
+
+        dep_seconds = compact_stops[from_idx][2]
+        arr_seconds = compact_stops[to_idx][1]
+        if not all_day and dep_seconds < requested_seconds:
+            continue
+
+        trip_slice = compact_stops[from_idx: to_idx + 1]
+        stops = []
+        for idx, (sid, arr_sec, dep_sec) in enumerate(trip_slice):
+            stop_name = (stops_by_id.get(sid) or {}).get("name") or sid
+            stops.append(
+                {
+                    "id": str(sid),
+                    "name": stop_name,
+                    "departure": _iso_from_date_and_seconds(requested_date, dep_sec),
+                    "arrival": _iso_from_date_and_seconds(requested_date, arr_sec),
+                    "platform": None,
+                }
+            )
+            if idx == 0:
+                stops[-1]["arrival"] = None
+            if idx == len(trip_slice) - 1:
+                stops[-1]["departure"] = None
+
+        dep_iso = _iso_from_date_and_seconds(requested_date, dep_seconds)
+        arr_iso = _iso_from_date_and_seconds(requested_date, arr_seconds)
+        train_number = str(trip.get("id", "")).split("_")[0]
+
+        routes.append(
+            {
+                "start_time": dep_iso,
+                "end_time": arr_iso,
+                "trains": [
+                    {
+                        "train_number": train_number or None,
+                        "departure": dep_iso,
+                        "arrival": arr_iso,
+                        "src": from_name,
+                        "dst": to_name,
+                        "platform": None,
+                        "dst_platform": None,
+                        "delay_minutes": None,
+                        "has_realtime": False,
+                        "stops": stops,
+                    }
+                ],
+            }
+        )
+
+    routes.sort(key=lambda row: row.get("start_time", ""))
+    return routes[:limit]
+
+
 def _route_unique_key(route):
     trains = getattr(route, "trains", []) or []
     first_train = trains[0] if trains else None
@@ -664,6 +803,17 @@ def get_routes(from_id, to_id):
             results = _filter_routes_from_request_time(results, date_str, time_str)
         return jsonify([route_to_dict(r) for r in results])
     except Exception as exc:
+        if _is_rail_forbidden_error(exc):
+            app.logger.warning("Primary rail API returned 403, using GTFS fallback")
+            fallback_routes = _query_routes_gtfs_fallback(
+                from_id,
+                to_id,
+                date_str,
+                time_str,
+                all_day=all_day,
+            )
+            if fallback_routes:
+                return jsonify(fallback_routes)
         app.logger.exception("Error fetching route schedules")
         return jsonify({"error": str(exc), "details": "Error fetching schedules"}), 500
 
