@@ -1,6 +1,9 @@
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from datetime import datetime, timedelta
+import re
+import threading
 import time
+from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -8,6 +11,7 @@ from israelrailapi import TrainSchedule
 import israelrailapi.api as rail_api
 import israelrailapi.schedule as rail_schedule
 import israelrailapi.train_station as rail_station
+import requests
 
 app = Flask(__name__)
 IL_TZ = ZoneInfo("Asia/Jerusalem")
@@ -55,10 +59,129 @@ rail_schedule.translate_station = _safe_translate_station
 
 # Ensure upstream rail API calls don't hang for long periods.
 _original_requests_post = rail_api.requests.post
+_rail_key_lock = threading.Lock()
+_rail_key_cache = {"value": rail_api.DEFAULT_HEADERS.get("ocp-apim-subscription-key"), "expires_at": 0}
+
+RAIL_BROWSER_HEADERS = {
+    "User-Agent": rail_api.USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+
+RAIL_API_EXTRA_HEADERS = {
+    "Origin": "https://www.rail.co.il",
+    "Referer": "https://www.rail.co.il/",
+    "Accept": "application/json, text/plain, */*",
+}
+
+RAIL_KEY_PATTERNS = [
+    re.compile(r'ocp-apim-subscription-key["\']?\s*[:=]\s*["\']([a-fA-F0-9]{32,64})["\']'),
+    re.compile(r'subscription[-_]?key["\']?\s*[:=]\s*["\']([a-fA-F0-9]{32,64})["\']', re.IGNORECASE),
+    re.compile(r'([a-fA-F0-9]{32,64})'),
+]
+
+
+def _extract_rail_key(text):
+    for idx, pattern in enumerate(RAIL_KEY_PATTERNS):
+        match = pattern.search(text or "")
+        if match:
+            candidate = match.group(1)
+            if idx == 2 and len(candidate) < 32:
+                continue
+            return candidate
+    return None
+
+
+def _fetch_rail_home():
+    response = requests.get(
+        "https://www.rail.co.il/",
+        headers=RAIL_BROWSER_HEADERS,
+        timeout=(4, 10),
+    )
+    response.raise_for_status()
+    html = response.text
+    script_urls = []
+    for script_path in re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html, flags=re.IGNORECASE):
+        if ".js" not in script_path.lower():
+            continue
+        script_urls.append(urljoin("https://www.rail.co.il/", script_path))
+    return html, script_urls
+
+
+def _refresh_rail_api_key():
+    html, script_urls = _fetch_rail_home()
+
+    home_key = _extract_rail_key(html)
+    if home_key:
+        return home_key
+
+    prioritized = sorted(
+        script_urls,
+        key=lambda url: (0 if "main" in url.lower() else 1, len(url)),
+    )
+    for script_url in prioritized[:8]:
+        try:
+            script_response = requests.get(
+                script_url,
+                headers=RAIL_BROWSER_HEADERS,
+                timeout=(4, 10),
+            )
+            script_response.raise_for_status()
+        except Exception:
+            continue
+        script_key = _extract_rail_key(script_response.text)
+        if script_key:
+            return script_key
+    raise RuntimeError("Could not locate a valid Rail API subscription key")
+
+
+def _get_rail_api_key(force_refresh=False):
+    now_ts = time.time()
+    if not force_refresh and _rail_key_cache["value"] and _rail_key_cache["expires_at"] > now_ts:
+        return _rail_key_cache["value"]
+
+    with _rail_key_lock:
+        now_ts = time.time()
+        if not force_refresh and _rail_key_cache["value"] and _rail_key_cache["expires_at"] > now_ts:
+            return _rail_key_cache["value"]
+        try:
+            key = _refresh_rail_api_key()
+            _rail_key_cache["value"] = key
+            _rail_key_cache["expires_at"] = now_ts + (6 * 60 * 60)
+            return key
+        except Exception as exc:
+            app.logger.warning("Rail API key refresh failed: %s", exc)
+            if _rail_key_cache["value"]:
+                _rail_key_cache["expires_at"] = now_ts + (20 * 60)
+                return _rail_key_cache["value"]
+            raise
+
+
+def _build_rail_headers(existing_headers=None, force_refresh=False):
+    headers = dict(existing_headers or {})
+    headers.update(RAIL_API_EXTRA_HEADERS)
+    headers.setdefault("Content-Type", "application/json")
+    headers.setdefault("User-Agent", rail_api.USER_AGENT)
+    headers["ocp-apim-subscription-key"] = _get_rail_api_key(force_refresh=force_refresh)
+    return headers
 
 
 def _requests_post_with_timeout(*args, **kwargs):
     kwargs.setdefault("timeout", (4, 10))
+
+    url = kwargs.get("url")
+    if not url and args:
+        url = args[0]
+
+    if isinstance(url, str) and "rail-api.rail.co.il/rjpa/api/v1/" in url:
+        base_headers = kwargs.get("headers") or rail_api.DEFAULT_HEADERS
+        kwargs["headers"] = _build_rail_headers(base_headers, force_refresh=False)
+        response = _original_requests_post(*args, **kwargs)
+        if response.status_code == 403:
+            kwargs["headers"] = _build_rail_headers(base_headers, force_refresh=True)
+            return _original_requests_post(*args, **kwargs)
+        return response
+
     return _original_requests_post(*args, **kwargs)
 
 
@@ -710,8 +833,3 @@ def get_station_board(station_id):
 if __name__ == "__main__":
     print("Server running at: http://127.0.0.1:5000")
     app.run(debug=True, port=5000)
-
-
-
-
-
