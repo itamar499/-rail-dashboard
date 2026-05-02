@@ -79,6 +79,12 @@ RAIL_API_EXTRA_HEADERS = {
     "Referer": "https://www.rail.co.il/",
     "Accept": "application/json, text/plain, */*",
 }
+RAIL_API_DIRECT_BASE = "https://rail-api.rail.co.il"
+RAIL_API_PROXY_BASE = os.environ.get(
+    "ISRAEL_RAILWAYS_API_PROXY_BASE",
+    "https://api.better-rail.co.il/api/v1/rail-api",
+).rstrip("/")
+_rail_proxy_until = 0
 
 RAIL_KEY_PATTERNS = [
     re.compile(r'ocp-apim-subscription-key["\']?\s*[:=]\s*["\']([a-fA-F0-9]{32,64})["\']'),
@@ -178,7 +184,16 @@ def _build_rail_headers(existing_headers=None, force_refresh=False):
     return headers
 
 
+def _rail_proxy_url(url):
+    if not isinstance(url, str) or not RAIL_API_PROXY_BASE:
+        return None
+    if not url.startswith(RAIL_API_DIRECT_BASE):
+        return None
+    return f"{RAIL_API_PROXY_BASE}{url[len(RAIL_API_DIRECT_BASE):]}"
+
+
 def _requests_post_with_timeout(*args, **kwargs):
+    global _rail_proxy_until
     kwargs.setdefault("timeout", (3, 8))
 
     url = kwargs.get("url")
@@ -188,7 +203,36 @@ def _requests_post_with_timeout(*args, **kwargs):
     if isinstance(url, str) and "rail-api.rail.co.il/rjpa/api/v1/" in url:
         base_headers = kwargs.get("headers") or rail_api.DEFAULT_HEADERS
         kwargs["headers"] = _build_rail_headers(base_headers, force_refresh=False)
-        return _original_requests_post(*args, **kwargs)
+        proxy_url = _rail_proxy_url(url)
+
+        if proxy_url and _rail_proxy_until > time.time():
+            proxy_args = list(args)
+            if "url" in kwargs:
+                kwargs["url"] = proxy_url
+            elif proxy_args:
+                proxy_args[0] = proxy_url
+            else:
+                kwargs["url"] = proxy_url
+            return _original_requests_post(*proxy_args, **kwargs)
+
+        response = _original_requests_post(*args, **kwargs)
+        if response.status_code != 403:
+            return response
+
+        if not proxy_url:
+            return response
+
+        app.logger.warning("Direct Israel Railways API returned 403, retrying via proxy")
+        _rail_proxy_until = time.time() + (15 * 60)
+        proxy_kwargs = dict(kwargs)
+        proxy_args = list(args)
+        if "url" in proxy_kwargs:
+            proxy_kwargs["url"] = proxy_url
+        elif proxy_args:
+            proxy_args[0] = proxy_url
+        else:
+            proxy_kwargs["url"] = proxy_url
+        return _original_requests_post(*proxy_args, **proxy_kwargs)
 
     return _original_requests_post(*args, **kwargs)
 
