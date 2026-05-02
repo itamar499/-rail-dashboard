@@ -62,7 +62,11 @@ rail_schedule.translate_station = _safe_translate_station
 # Ensure upstream rail API calls don't hang for long periods.
 _original_requests_post = rail_api.requests.post
 _rail_key_lock = threading.Lock()
-_rail_key_cache = {"value": rail_api.DEFAULT_HEADERS.get("ocp-apim-subscription-key"), "expires_at": 0}
+_rail_key_cache = {
+    "value": os.environ.get("ISRAEL_RAILWAYS_API_KEY")
+    or rail_api.DEFAULT_HEADERS.get("ocp-apim-subscription-key"),
+    "expires_at": 0,
+}
 
 RAIL_BROWSER_HEADERS = {
     "User-Agent": rail_api.USER_AGENT,
@@ -138,6 +142,12 @@ def _refresh_rail_api_key():
 
 
 def _get_rail_api_key(force_refresh=False):
+    env_key = os.environ.get("ISRAEL_RAILWAYS_API_KEY")
+    if env_key:
+        return env_key
+    if _rail_key_cache["value"]:
+        return _rail_key_cache["value"]
+
     now_ts = time.time()
     if not force_refresh and _rail_key_cache["value"] and _rail_key_cache["expires_at"] > now_ts:
         return _rail_key_cache["value"]
@@ -169,7 +179,7 @@ def _build_rail_headers(existing_headers=None, force_refresh=False):
 
 
 def _requests_post_with_timeout(*args, **kwargs):
-    kwargs.setdefault("timeout", (4, 10))
+    kwargs.setdefault("timeout", (3, 8))
 
     url = kwargs.get("url")
     if not url and args:
@@ -178,11 +188,7 @@ def _requests_post_with_timeout(*args, **kwargs):
     if isinstance(url, str) and "rail-api.rail.co.il/rjpa/api/v1/" in url:
         base_headers = kwargs.get("headers") or rail_api.DEFAULT_HEADERS
         kwargs["headers"] = _build_rail_headers(base_headers, force_refresh=False)
-        response = _original_requests_post(*args, **kwargs)
-        if response.status_code == 403:
-            kwargs["headers"] = _build_rail_headers(base_headers, force_refresh=True)
-            return _original_requests_post(*args, **kwargs)
-        return response
+        return _original_requests_post(*args, **kwargs)
 
     return _original_requests_post(*args, **kwargs)
 
