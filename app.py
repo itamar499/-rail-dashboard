@@ -81,8 +81,7 @@ RAIL_API_EXTRA_HEADERS = {
 }
 RAIL_API_DIRECT_BASE = "https://rail-api.rail.co.il"
 RAIL_API_PROXY_BASE = os.environ.get(
-    "ISRAEL_RAILWAYS_API_PROXY_BASE",
-    "https://api.better-rail.co.il/api/v1/rail-api",
+    "ISRAEL_RAILWAYS_API_PROXY_BASE", ""
 ).rstrip("/")
 _rail_proxy_until = 0
 
