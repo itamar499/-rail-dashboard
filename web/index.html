@@ -597,10 +597,15 @@
             const rawStops = (train.routeStations && train.routeStations.length) ? train.routeStations : (train.stopStations || []);
             const stops = rawStops.map(stop => {
                 const sid = stopStationId(stop);
+                const arrival = coerceNativeTimeWithDate(stop.arrivalTime, dateStr);
+                const departure = coerceNativeTimeWithDate(stop.departureTime, dateStr);
                 return {
                     id: String(sid || ''),
                     name: stationNameById(sid, stop.stationNameHeb || stop.stationName || stop.name),
-                    time: nativeStopTime(stop, dateStr),
+                    time: departure || arrival || nativeStopTime(stop, dateStr),
+                    arrival,
+                    departure,
+                    platform: stop.platform,
                 };
             }).filter(stop => stop.id || stop.name);
 
@@ -609,10 +614,10 @@
             const srcName = stationNameById(srcId);
             const dstName = stationNameById(dstId);
             if (srcId && (!stops.length || String(stops[0].id) !== String(srcId))) {
-                stops.unshift({ id: String(srcId), name: srcName, time: coerceNativeTimeWithDate(train.departureTime, dateStr) });
+                stops.unshift({ id: String(srcId), name: srcName, time: coerceNativeTimeWithDate(train.departureTime, dateStr), departure: coerceNativeTimeWithDate(train.departureTime, dateStr), arrival: null, platform: train.originPlatform || train.platform });
             }
             if (dstId && (!stops.length || String(stops[stops.length - 1].id) !== String(dstId))) {
-                stops.push({ id: String(dstId), name: dstName, time: coerceNativeTimeWithDate(train.arrivalTime, dateStr) });
+                stops.push({ id: String(dstId), name: dstName, time: coerceNativeTimeWithDate(train.arrivalTime, dateStr), arrival: coerceNativeTimeWithDate(train.arrivalTime, dateStr), departure: null, platform: train.destPlatform });
             }
 
             return stops.filter((stop, index, arr) => index === 0 || normalizeStationName(stop.name) !== normalizeStationName(arr[index - 1].name));
@@ -674,6 +679,71 @@
             });
 
             return Array.from(deduped.values()).sort((a, b) => new Date(a.effective_time || a.time) - new Date(b.effective_time || b.time));
+        }
+
+
+        function nativeTrainToRouteTrain(train, dateStr) {
+            const srcId = train.orignStation ?? train.originStation ?? train.fromStation;
+            const dstId = train.destinationStation ?? train.destStation ?? train.toStation;
+            const departure = coerceNativeTimeWithDate(train.departureTime, dateStr);
+            const arrival = coerceNativeTimeWithDate(train.arrivalTime, dateStr);
+            const realtime = extractNativeRealtime(train, srcId);
+            const stops = buildNativeTrainStops(train, dateStr).map(stop => ({
+                ...stop,
+                arrival: stop.arrival || stop.time,
+                departure: stop.departure || stop.time,
+            }));
+            return {
+                train_number: train.trainNumber,
+                src: stationNameById(srcId),
+                dst: stationNameById(dstId),
+                departure,
+                arrival,
+                platform: train.originPlatform || train.platform || stops[0]?.platform,
+                dst_platform: train.destPlatform || stops[stops.length - 1]?.platform,
+                delay_minutes: realtime.delay_minutes,
+                has_realtime: realtime.has_realtime,
+                train_position: realtime.train_position,
+                stops,
+            };
+        }
+
+        function nativeTravelToRoute(travel, dateStr) {
+            const trains = (travel.trains || []).map(train => nativeTrainToRouteTrain(train, dateStr));
+            if (!trains.length) return null;
+            const first = trains[0];
+            const last = trains[trains.length - 1];
+            if (!first.departure || !last.arrival) return null;
+            return {
+                start_time: first.departure,
+                end_time: last.arrival,
+                duration_minutes: minutesBetween(first.departure, last.arrival),
+                trains,
+            };
+        }
+
+        function nativeRouteKey(route) {
+            const trainNums = (route.trains || []).map(t => t.train_number || '').join(',');
+            return trainNums + '|' + String(route.start_time || '') + '|' + String(route.end_time || '');
+        }
+
+        async function nativeRouteSearchRows(fromId, toId, date, time, allDay) {
+            if (!isNativeCapacitor()) return [];
+            const queryTimes = allDay ? ['00:00', '06:00', '12:00', '18:00'] : [time || currentTimeValue()];
+            const routeSets = await Promise.allSettled(queryTimes.map(queryTime => nativeRailRoutes(fromId, toId, date, queryTime)));
+            const deduped = new Map();
+            const requestedStart = new Date(date + 'T' + (time || '00:00') + ':00');
+            routeSets.forEach(result => {
+                if (result.status !== 'fulfilled' || !Array.isArray(result.value)) return;
+                result.value.forEach(travel => {
+                    const route = nativeTravelToRoute(travel, date);
+                    if (!route) return;
+                    if (!allDay && new Date(route.start_time) < requestedStart) return;
+                    const key = nativeRouteKey(route);
+                    if (!deduped.has(key)) deduped.set(key, route);
+                });
+            });
+            return Array.from(deduped.values()).sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
         }
 
         function showLoading(target, text) {
@@ -1162,7 +1232,22 @@
             showLoading('search', 'מחפש נסיעות...');
 
             try {
-                const routes = await fetchJson(url);
+                let routes = [];
+                let sourceLabel = '';
+                if (isNativeCapacitor()) {
+                    try {
+                        const nativeRoutes = await nativeRouteSearchRows(fromStation.id, toStation.id, date, time, Boolean(forceAllDay));
+                        if (nativeRoutes.length) {
+                            routes = nativeRoutes;
+                            sourceLabel = ' (\u05D9\u05E9\u05D9\u05E8 \u05DE\u05D4\u05D8\u05DC\u05E4\u05D5\u05DF)';
+                        }
+                    } catch (nativeError) {
+                        console.error(nativeError);
+                    }
+                }
+                if (!routes.length) {
+                    routes = await fetchJson(url);
+                }
                 pushRecentRouteSearch({
                     from_id: fromStation.id,
                     to_id: toStation.id,
@@ -1171,13 +1256,14 @@
                     from_label: stationLabel(fromStation),
                     to_label: stationLabel(toStation),
                 });
+                routes = Array.isArray(routes) ? routes : [];
                 setResultsHeader(fromStation.name, toStation.name, routes.length);
                 renderResults(routes, { forceAllDay: Boolean(forceAllDay) });
-                hint.textContent = forceAllDay ? 'מציג את כל הנסיעות ליום הנבחר.' : 'מציג נסיעות החל מהשעה שנבחרה.';
+                hint.textContent = (forceAllDay ? '\u05DE\u05E6\u05D9\u05D2 \u05D0\u05EA \u05DB\u05DC \u05D4\u05E0\u05E1\u05D9\u05E2\u05D5\u05EA \u05DC\u05D9\u05D5\u05DD \u05D4\u05E0\u05D1\u05D7\u05E8.' : '\u05DE\u05E6\u05D9\u05D2 \u05E0\u05E1\u05D9\u05E2\u05D5\u05EA \u05D4\u05D7\u05DC \u05DE\u05D4\u05E9\u05E2\u05D4 \u05E9\u05E0\u05D1\u05D7\u05E8\u05D4.') + sourceLabel;
             } catch (error) {
                 console.error(error);
-                body.innerHTML = '<div class="empty-state">שגיאה בטעינת הנתונים. נסה שוב.</div>';
-                hint.textContent = `שגיאה: ${error.message}`;
+                body.innerHTML = '<div class="empty-state">\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D8\u05E2\u05D9\u05E0\u05EA \u05D4\u05E0\u05EA\u05D5\u05E0\u05D9\u05DD. \u05E0\u05E1\u05D4 \u05E9\u05D5\u05D1.</div>';
+                hint.textContent = `\u05E9\u05D2\u05D9\u05D0\u05D4: ${error.message}`;
             } finally {
                 hideLoading('search');
             }
