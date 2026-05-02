@@ -168,6 +168,9 @@
         const MAX_RECENT_ROUTE_SEARCHES = 6;
         const ALL_DAY_INITIAL_ROUTES = 8;
         const ALL_DAY_LOAD_MORE_STEP = 8;
+        const RAIL_API_URL = 'https://rail-api.rail.co.il/rjpa/api/v1/timetable/searchTrain';
+        const RAIL_API_KEY = '5e64d66cf03f4547bcac5de2de06b566';
+        const RAIL_BOARD_HUBS = [3500, 1600, 1840, 1280, 7320, 7300, 7500, 5900, 9600, 9000, 9800, 3700];
         let userEditedTimePicker = false;
         let allDayRenderState = {
             routes: [],
@@ -465,6 +468,212 @@
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.error || 'Request failed');
             return payload;
+        }
+
+        function nativeHttpPlugin() {
+            return window.Capacitor?.Plugins?.CapacitorHttp || window.CapacitorHttp || null;
+        }
+
+        function isNativeCapacitor() {
+            return Boolean(window.Capacitor?.isNativePlatform?.() && nativeHttpPlugin());
+        }
+
+        function parseNativePayload(data) {
+            if (typeof data === 'string') {
+                try {
+                    return JSON.parse(data);
+                } catch (_) {
+                    return null;
+                }
+            }
+            return data || null;
+        }
+
+        async function nativeRailRoutes(fromId, toId, date, time) {
+            const http = nativeHttpPlugin();
+            if (!http) return [];
+
+            const response = await http.post({
+                url: RAIL_API_URL,
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'Ocp-Apim-Subscription-Key': RAIL_API_KEY,
+                    'User-Agent': 'Mozilla/5.0',
+                },
+                data: {
+                    fromStation: Number(fromId),
+                    toStation: Number(toId),
+                    date,
+                    hour: time,
+                    scheduleType: 'ByDeparture',
+                    systemType: '2',
+                    languageId: 'Hebrew',
+                },
+                responseType: 'json',
+            });
+
+            if (response.status && response.status !== 200) {
+                throw new Error('Rail API status ' + response.status);
+            }
+
+            const payload = parseNativePayload(response.data);
+            return payload?.result?.travels || payload?.result || [];
+        }
+
+        function stationNameById(stationId, rawName) {
+            if (rawName && /[א-ת]/.test(String(rawName))) return rawName;
+            const sid = String(stationId || '').trim();
+            const station = stations.find(s => String(s.id) === sid);
+            return station?.heb || station?.name || station?.eng || rawName || sid;
+        }
+
+        function coerceNativeTimeWithDate(value, dateStr) {
+            if (!value) return null;
+            const raw = String(value).trim();
+            if (!raw) return null;
+            if (raw.includes('T')) return raw;
+            const match = raw.match(/^(\d{1,2}):(\d{2})/);
+            if (!match) return raw;
+            return dateStr + 'T' + match[1].padStart(2, '0') + ':' + match[2] + ':00';
+        }
+
+        function stopStationId(stop) {
+            return stop?.stationId ?? stop?.stationID ?? stop?.id ?? stop?.station;
+        }
+
+        function nativeStopTime(stop, dateStr) {
+            return coerceNativeTimeWithDate(stop?.departureTime || stop?.arrivalTime || stop?.time, dateStr);
+        }
+
+        function findNativeStationPassTime(train, stationId, dateStr) {
+            const stationKey = String(stationId);
+            for (const stop of (train.stopStations || [])) {
+                if (String(stopStationId(stop)) === stationKey) {
+                    return { time: nativeStopTime(stop, dateStr), platform: stop.platform };
+                }
+            }
+            for (const stop of (train.routeStations || [])) {
+                if (String(stopStationId(stop)) === stationKey) {
+                    return { time: nativeStopTime(stop, dateStr), platform: stop.platform };
+                }
+            }
+            if (String(train.orignStation ?? train.originStation ?? train.fromStation) === stationKey) {
+                return {
+                    time: coerceNativeTimeWithDate(train.departureTime, dateStr),
+                    platform: train.originPlatform || train.platform,
+                };
+            }
+            return null;
+        }
+
+        function extractNativeRealtime(train, stationId) {
+            const stationKey = String(stationId);
+            let delayMinutes = null;
+            for (const item of (train.etaDiffTimes || [])) {
+                if (String(item.stationId) !== stationKey) continue;
+                const parsed = Number(item.difMin ?? item.diffMin ?? item.delayMinutes);
+                if (Number.isFinite(parsed)) {
+                    delayMinutes = parsed;
+                    break;
+                }
+            }
+
+            const rawPosition = train.trainPosition;
+            const trainPosition = rawPosition ? {
+                current_last_station: stationNameById(rawPosition.currentLastStation),
+                next_station: stationNameById(rawPosition.nextStation),
+                calc_diff_minutes: Number.isFinite(Number(rawPosition.calcDiffMinutes)) ? Number(rawPosition.calcDiffMinutes) : null,
+            } : null;
+
+            return {
+                delay_minutes: delayMinutes,
+                has_realtime: Boolean((train.etaDiffTimes || []).length || trainPosition),
+                train_position: trainPosition,
+            };
+        }
+
+        function buildNativeTrainStops(train, dateStr) {
+            const rawStops = (train.routeStations && train.routeStations.length) ? train.routeStations : (train.stopStations || []);
+            const stops = rawStops.map(stop => {
+                const sid = stopStationId(stop);
+                return {
+                    id: String(sid || ''),
+                    name: stationNameById(sid, stop.stationNameHeb || stop.stationName || stop.name),
+                    time: nativeStopTime(stop, dateStr),
+                };
+            }).filter(stop => stop.id || stop.name);
+
+            const srcId = train.orignStation ?? train.originStation ?? train.fromStation;
+            const dstId = train.destinationStation ?? train.destStation ?? train.toStation;
+            const srcName = stationNameById(srcId);
+            const dstName = stationNameById(dstId);
+            if (srcId && (!stops.length || String(stops[0].id) !== String(srcId))) {
+                stops.unshift({ id: String(srcId), name: srcName, time: coerceNativeTimeWithDate(train.departureTime, dateStr) });
+            }
+            if (dstId && (!stops.length || String(stops[stops.length - 1].id) !== String(dstId))) {
+                stops.push({ id: String(dstId), name: dstName, time: coerceNativeTimeWithDate(train.arrivalTime, dateStr) });
+            }
+
+            return stops.filter((stop, index, arr) => index === 0 || normalizeStationName(stop.name) !== normalizeStationName(arr[index - 1].name));
+        }
+
+        function nativeBoardKey(row) {
+            return String(row.train_number || '') + '|' + String(row.time || '') + '|' + String(row.src || '') + '|' + String(row.dest || '');
+        }
+
+        async function nativeStationBoardRows(station, minutes) {
+            if (!isNativeCapacitor()) return [];
+
+            const now = new Date();
+            const maxTime = new Date(now.getTime() + Number(minutes) * 60 * 1000);
+            const date = dateInputValue(now);
+            const time = currentTimeValue();
+            const hubIds = RAIL_BOARD_HUBS.filter(hub => String(hub) !== String(station.id));
+            const routeSets = await Promise.allSettled(hubIds.map(hub => nativeRailRoutes(station.id, hub, date, time)));
+            const deduped = new Map();
+
+            routeSets.forEach(result => {
+                if (result.status !== 'fulfilled' || !Array.isArray(result.value)) return;
+                result.value.forEach(route => {
+                    (route.trains || []).forEach(train => {
+                        const pass = findNativeStationPassTime(train, station.id, date);
+                        if (!pass?.time) return;
+
+                        const departureDt = new Date(pass.time);
+                        if (Number.isNaN(departureDt.getTime())) return;
+
+                        const realtime = extractNativeRealtime(train, station.id);
+                        const effectiveDt = new Date(departureDt.getTime() + (Number(realtime.delay_minutes) || 0) * 60 * 1000);
+                        if (effectiveDt < now || effectiveDt > maxTime) return;
+
+                        const stops = buildNativeTrainStops(train, date);
+                        const lineSrc = stops[0]?.name || stationNameById(train.orignStation ?? train.originStation);
+                        const lineDst = stops[stops.length - 1]?.name || stationNameById(train.destinationStation);
+                        const row = {
+                            train_number: train.trainNumber,
+                            src: lineSrc,
+                            dest: lineDst,
+                            line_name: lineSrc + ' - ' + lineDst,
+                            time: pass.time,
+                            effective_time: effectiveDt.toISOString(),
+                            platform: pass.platform || train.originPlatform || train.platform,
+                            eta_minutes: Math.floor((departureDt - now) / 60000),
+                            effective_eta_minutes: Math.floor((effectiveDt - now) / 60000),
+                            delay_minutes: realtime.delay_minutes,
+                            has_realtime: realtime.has_realtime,
+                            train_position: realtime.train_position,
+                            stops,
+                        };
+                        const key = nativeBoardKey(row);
+                        if (!deduped.has(key) || (row.stops || []).length > (deduped.get(key).stops || []).length) {
+                            deduped.set(key, row);
+                        }
+                    });
+                });
+            });
+
+            return Array.from(deduped.values()).sort((a, b) => new Date(a.effective_time || a.time) - new Date(b.effective_time || b.time));
         }
 
         function showLoading(target, text) {
@@ -992,11 +1201,19 @@
             showLoading('board', 'מעדכן זמן אמת...');
 
             try {
-                const rows = await fetchJson(`/api/station-board/${station.id}?upcoming=1&minutes=${minutes}&fast=1`);
-                boardRowsRaw = rows;
+                let rows = await fetchJson(`/api/station-board/${station.id}?upcoming=1&minutes=${minutes}&fast=1`);
+                let sourceLabel = '';
+                if ((!Array.isArray(rows) || rows.length === 0) && isNativeCapacitor()) {
+                    const nativeRows = await nativeStationBoardRows(station, Number(minutes));
+                    if (nativeRows.length) {
+                        rows = nativeRows;
+                        sourceLabel = ' (ישיר מהטלפון)';
+                    }
+                }
+                boardRowsRaw = Array.isArray(rows) ? rows : [];
                 boardStationCurrent = station;
                 applyBoardFilter();
-                hint.textContent = `זמן אמת לתחנה: ${station.name}`;
+                hint.textContent = `זמן אמת לתחנה: ${station.name}${sourceLabel}`;
             } catch (error) {
                 console.error(error);
                 body.innerHTML = '<div class="empty-state">שגיאה בטעינת זמן אמת. נסה שוב.</div>';
