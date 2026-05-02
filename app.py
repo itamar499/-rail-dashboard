@@ -520,6 +520,15 @@ def _query_routes_once(from_id, to_id, date_str, time_str):
 
 _GTFS_FALLBACK_CACHE = {"loaded": False, "data": None}
 
+GTFS_STATION_ID_OVERRIDES = {
+    # Israel Railways API station id -> Ministry of Transport GTFS stop_id.
+    # Names are not always identical between the two public datasets.
+    "3700": "37358",  # Tel Aviv Savidor Center / Tel Aviv Center
+    "4600": "37350",  # Tel Aviv HaShalom / HaShalom
+    "4900": "37292",  # Tel Aviv HaHagana
+    "8600": "37306",  # Ben Gurion Airport / Natbag
+}
+
 
 def _is_rail_forbidden_error(exc):
     message = str(exc or "")
@@ -541,6 +550,63 @@ def _load_gtfs_fallback_data():
     _GTFS_FALLBACK_CACHE["loaded"] = True
     _GTFS_FALLBACK_CACHE["data"] = data
     return data
+
+
+def _normalize_gtfs_station_name(value):
+    text = str(value or "")
+    replacements = {
+        '"': "",
+        "'": "",
+        "׳": "",
+        "״": "",
+        "/": " ",
+        "-": " ",
+        "קריית": "קרית",
+        "המפרץ": "מפרץ",
+        "נמל תעופה בן גוריון": "נתבג",
+        "בן גוריון": "נתבג",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = re.sub(r"\([^)]*\)", " ", text)
+    text = text.replace("תחנת", " ").replace("רכבת", " ")
+    return " ".join(text.split())
+
+
+def _gtfs_station_tokens(value):
+    return set(_normalize_gtfs_station_name(value).split())
+
+
+def _resolve_gtfs_station(payload, station_id):
+    station_map = payload.get("station_map", {})
+    key = str(station_id)
+    if key in station_map:
+        return station_map[key]
+    if key in GTFS_STATION_ID_OVERRIDES:
+        return GTFS_STATION_ID_OVERRIDES[key]
+
+    station_name = get_station_name(station_id)
+    station_tokens = _gtfs_station_tokens(station_name)
+    if not station_tokens:
+        return None
+
+    best = None
+    for sid, stop in (payload.get("stops") or {}).items():
+        stop_name = stop.get("name")
+        stop_tokens = _gtfs_station_tokens(stop_name)
+        if not stop_tokens:
+            continue
+        score = len(station_tokens & stop_tokens) / len(station_tokens | stop_tokens)
+        if _normalize_gtfs_station_name(station_name) == _normalize_gtfs_station_name(stop_name):
+            score += 1
+        elif _normalize_gtfs_station_name(stop_name) in _normalize_gtfs_station_name(station_name):
+            score += 0.5
+        if best is None or score > best[0]:
+            best = (score, sid)
+
+    if best and best[0] >= 0.3:
+        return best[1]
+    return None
 
 
 def _seconds_from_hhmm(time_str):
@@ -565,17 +631,19 @@ def _service_active_on_date(service_row, date_obj):
 
 
 def _query_routes_gtfs_fallback(from_id, to_id, date_str, time_str, all_day=False, limit=25):
+    if all_day and limit == 25:
+        limit = 200
+
     payload = _load_gtfs_fallback_data()
     if not payload:
         return []
 
-    station_map = payload.get("station_map", {})
     stops_by_id = payload.get("stops", {})
     calendar = payload.get("calendar", {})
     trips = payload.get("trips", [])
 
-    from_station = station_map.get(str(from_id))
-    to_station = station_map.get(str(to_id))
+    from_station = _resolve_gtfs_station(payload, from_id)
+    to_station = _resolve_gtfs_station(payload, to_id)
     if not from_station or not to_station:
         return []
 
@@ -678,7 +746,9 @@ def _query_routes_all_day(from_id, to_id, date_str):
     for anchor in anchor_times:
         try:
             routes = _query_routes_once(from_id, to_id, date_str, anchor)
-        except Exception:
+        except Exception as exc:
+            if _is_rail_forbidden_error(exc):
+                raise
             continue
         for route in routes:
             key = _route_unique_key(route)
