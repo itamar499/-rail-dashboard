@@ -385,15 +385,15 @@ def _find_station_pass_time(train, station_id, date_str):
 def _board_key(line_start, line_end, departure_time, train_number=None):
     """
     Use train number + departure time as the primary identity.
-    Fallbacks are used only when train number is missing.
+    Fallbacks avoid the destination because station board discovery queries
+    several hubs, and the same train may be returned with a hub as its endpoint.
     """
     line_start = str(line_start or "").strip()
-    line_end = str(line_end or "").strip()
     dep = str(departure_time or "").strip()
     train_num = str(train_number or "").strip()
     if train_num:
         return ("run", train_num, dep)
-    return ("line", line_start, line_end, dep)
+    return ("line", line_start, dep)
 
 
 def _line_name_from_stops(stops, fallback_src, fallback_dst):
@@ -487,8 +487,34 @@ def route_to_dict(route):
                 }
             )
 
+        def _trim_stops_to_requested_segment(all_stops, src_id, dst_id):
+            src_id = str(src_id)
+            dst_id = str(dst_id)
+            src_indexes = [idx for idx, stop in enumerate(all_stops) if str(stop.get("id")) == src_id]
+            dst_indexes = [idx for idx, stop in enumerate(all_stops) if str(stop.get("id")) == dst_id]
+            if not src_indexes or not dst_indexes:
+                return all_stops
+
+            best_pair = None
+            best_span = None
+            for src_idx in src_indexes:
+                for dst_idx in dst_indexes:
+                    if dst_idx <= src_idx:
+                        continue
+                    span = dst_idx - src_idx
+                    if best_span is None or span < best_span:
+                        best_span = span
+                        best_pair = (src_idx, dst_idx)
+
+            if best_pair is None:
+                return all_stops
+
+            src_idx, dst_idx = best_pair
+            return all_stops[src_idx: dst_idx + 1]
+
         src_name = get_station_name(t.src)
         dst_name = get_station_name(t.dst)
+        stops = _trim_stops_to_requested_segment(stops, t.src, t.dst)
 
         if not stops or stops[0]["name"] != src_name:
             stops.insert(
