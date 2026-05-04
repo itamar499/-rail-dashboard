@@ -170,6 +170,7 @@
         const ALL_DAY_LOAD_MORE_STEP = 8;
         const RAIL_API_URL = 'https://rail-api.rail.co.il/rjpa/api/v1/timetable/searchTrain';
         const RAIL_API_KEY = '5e64d66cf03f4547bcac5de2de06b566';
+        const BACKEND_API_BASE = 'https://mesilot.vercel.app';
         const RAIL_BOARD_HUBS = [3500, 1600, 1840, 1280, 7320, 7300, 7500, 5900, 9600, 9000, 9800, 3700];
         let userEditedTimePicker = false;
         let allDayRenderState = {
@@ -464,7 +465,26 @@
         }
 
         async function fetchJson(url) {
-            const response = await fetch(url);
+            const resolvedUrl = isNativeRuntime() && String(url).startsWith('/api/')
+                ? `${BACKEND_API_BASE}${url}`
+                : url;
+
+            if (isNativeRuntime() && String(resolvedUrl).startsWith('https://')) {
+                const http = nativeHttpPlugin();
+                if (http) {
+                    const response = await http.get({
+                        url: resolvedUrl,
+                        headers: { 'Accept': 'application/json' },
+                    });
+                    const payload = parseNativePayload(response.data);
+                    if (response.status && (response.status < 200 || response.status >= 300)) {
+                        throw new Error(payload?.error || `Request failed (${response.status})`);
+                    }
+                    return payload;
+                }
+            }
+
+            const response = await fetch(resolvedUrl);
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.error || 'Request failed');
             return payload;
@@ -474,8 +494,12 @@
             return window.Capacitor?.Plugins?.CapacitorHttp || window.CapacitorHttp || null;
         }
 
+        function isNativeRuntime() {
+            return Boolean(window.Capacitor?.isNativePlatform?.());
+        }
+
         function isNativeCapacitor() {
-            return Boolean(window.Capacitor?.isNativePlatform?.() && nativeHttpPlugin());
+            return Boolean(isNativeRuntime() && nativeHttpPlugin());
         }
 
         function parseNativePayload(data) {
@@ -593,7 +617,39 @@
             };
         }
 
-        function buildNativeTrainStops(train, dateStr) {
+        function trimNativeStopsToSegment(stops, fromId, toId) {
+            if (!fromId || !toId || !Array.isArray(stops) || stops.length < 2) return stops;
+
+            const fromKey = String(fromId);
+            const toKey = String(toId);
+            let bestSlice = null;
+            for (let start = 0; start < stops.length; start++) {
+                if (String(stops[start].id || '') !== fromKey) continue;
+                for (let end = start + 1; end < stops.length; end++) {
+                    if (String(stops[end].id || '') !== toKey) continue;
+                    const slice = stops.slice(start, end + 1);
+                    if (!bestSlice || slice.length < bestSlice.length) bestSlice = slice;
+                    break;
+                }
+            }
+            if (!bestSlice) return stops;
+
+            const firstTime = new Date(bestSlice[0]?.departure || bestSlice[0]?.time || bestSlice[0]?.arrival || '');
+            const lastStop = bestSlice[bestSlice.length - 1];
+            const lastTime = new Date(lastStop?.arrival || lastStop?.time || lastStop?.departure || '');
+            if (Number.isNaN(firstTime.getTime()) || Number.isNaN(lastTime.getTime()) || lastTime < firstTime) {
+                return bestSlice;
+            }
+
+            return bestSlice.filter((stop, index) => {
+                if (index === 0 || index === bestSlice.length - 1) return true;
+                const stopTime = new Date(stop.departure || stop.time || stop.arrival || '');
+                if (Number.isNaN(stopTime.getTime())) return true;
+                return stopTime >= firstTime && stopTime <= lastTime;
+            });
+        }
+
+        function buildNativeTrainStops(train, dateStr, segmentFromId = null, segmentToId = null) {
             const rawStops = (train.routeStations && train.routeStations.length) ? train.routeStations : (train.stopStations || []);
             const stops = rawStops.map(stop => {
                 const sid = stopStationId(stop);
@@ -620,11 +676,12 @@
                 stops.push({ id: String(dstId), name: dstName, time: coerceNativeTimeWithDate(train.arrivalTime, dateStr), arrival: coerceNativeTimeWithDate(train.arrivalTime, dateStr), departure: null, platform: train.destPlatform });
             }
 
-            return stops.filter((stop, index, arr) => index === 0 || normalizeStationName(stop.name) !== normalizeStationName(arr[index - 1].name));
+            const dedupedStops = stops.filter((stop, index, arr) => index === 0 || normalizeStationName(stop.name) !== normalizeStationName(arr[index - 1].name));
+            return trimNativeStopsToSegment(dedupedStops, segmentFromId, segmentToId);
         }
 
         function nativeBoardKey(row) {
-            return String(row.train_number || '') + '|' + String(row.time || '') + '|' + String(row.src || '') + '|' + String(row.dest || '');
+            return String(row.train_number || '') + '|' + String(row.time || '') + '|' + String(row.src || '');
         }
 
         async function nativeStationBoardRows(station, minutes) {
@@ -682,25 +739,29 @@
         }
 
 
-        function nativeTrainToRouteTrain(train, dateStr) {
+        function nativeTrainToRouteTrain(train, dateStr, segmentFromId = null, segmentToId = null) {
             const srcId = train.orignStation ?? train.originStation ?? train.fromStation;
             const dstId = train.destinationStation ?? train.destStation ?? train.toStation;
             const departure = coerceNativeTimeWithDate(train.departureTime, dateStr);
             const arrival = coerceNativeTimeWithDate(train.arrivalTime, dateStr);
-            const realtime = extractNativeRealtime(train, srcId);
-            const stops = buildNativeTrainStops(train, dateStr).map(stop => ({
+            const displaySrcId = segmentFromId || srcId;
+            const displayDstId = segmentToId || dstId;
+            const realtime = extractNativeRealtime(train, displaySrcId);
+            const stops = buildNativeTrainStops(train, dateStr, segmentFromId, segmentToId).map(stop => ({
                 ...stop,
                 arrival: stop.arrival || stop.time,
                 departure: stop.departure || stop.time,
             }));
+            const firstStop = stops[0];
+            const lastStop = stops[stops.length - 1];
             return {
                 train_number: train.trainNumber,
-                src: stationNameById(srcId),
-                dst: stationNameById(dstId),
-                departure,
-                arrival,
-                platform: train.originPlatform || train.platform || stops[0]?.platform,
-                dst_platform: train.destPlatform || stops[stops.length - 1]?.platform,
+                src: stationNameById(displaySrcId, firstStop?.name),
+                dst: stationNameById(displayDstId, lastStop?.name),
+                departure: firstStop?.departure || firstStop?.time || departure,
+                arrival: lastStop?.arrival || lastStop?.time || arrival,
+                platform: firstStop?.platform || train.originPlatform || train.platform,
+                dst_platform: lastStop?.platform || train.destPlatform,
                 delay_minutes: realtime.delay_minutes,
                 has_realtime: realtime.has_realtime,
                 train_position: realtime.train_position,
@@ -708,8 +769,15 @@
             };
         }
 
-        function nativeTravelToRoute(travel, dateStr) {
-            const trains = (travel.trains || []).map(train => nativeTrainToRouteTrain(train, dateStr));
+        function nativeTravelToRoute(travel, dateStr, segmentFromId = null, segmentToId = null) {
+            const rawTrains = travel.trains || [];
+            const shouldTrimSingleTrain = rawTrains.length === 1;
+            const trains = rawTrains.map(train => nativeTrainToRouteTrain(
+                train,
+                dateStr,
+                shouldTrimSingleTrain ? segmentFromId : null,
+                shouldTrimSingleTrain ? segmentToId : null
+            ));
             if (!trains.length) return null;
             const first = trains[0];
             const last = trains[trains.length - 1];
@@ -736,7 +804,7 @@
             routeSets.forEach(result => {
                 if (result.status !== 'fulfilled' || !Array.isArray(result.value)) return;
                 result.value.forEach(travel => {
-                    const route = nativeTravelToRoute(travel, date);
+                    const route = nativeTravelToRoute(travel, date, fromId, toId);
                     if (!route) return;
                     if (!allDay && new Date(route.start_time) < requestedStart) return;
                     const key = nativeRouteKey(route);
@@ -1112,6 +1180,7 @@
 
             body.innerHTML = rows.map((row, idx) => {
                 const markerRatio = trainMarkerRatio(row);
+                const boardTitle = row.src || (row.train_number ? `רכבת ${row.train_number}` : 'רכבת');
                 const stopsHtml = Array.isArray(row.stops) ? row.stops.map(stop => {
                             const isCurrent = isSearchedBoardStationStop(stop);
                             return `
@@ -1126,7 +1195,7 @@
                     <button class="board-row" onclick="toggleBoardDetails(${idx})">
                         <div class="board-main">
                             <div class="board-topline">
-                                <strong class="board-line">${row.line_name || `${row.src} - ${row.dest}`}</strong>
+                                <strong class="board-line">${boardTitle}</strong>
                                 <span class="board-destination">לכיוון ${row.dest || '-'}</span>
                             </div>
                             <div class="board-tags">
@@ -1287,15 +1356,25 @@
             showLoading('board', 'מעדכן זמן אמת...');
 
             try {
-                let rows = await fetchJson(`/api/station-board/${station.id}?upcoming=1&minutes=${minutes}&fast=1`);
+                let rows = [];
                 let sourceLabel = '';
-                if ((!Array.isArray(rows) || rows.length === 0) && isNativeCapacitor()) {
-                    const nativeRows = await nativeStationBoardRows(station, Number(minutes));
-                    if (nativeRows.length) {
-                        rows = nativeRows;
-                        sourceLabel = ' (ישיר מהטלפון)';
+
+                if (isNativeCapacitor()) {
+                    try {
+                        const nativeRows = await nativeStationBoardRows(station, Number(minutes));
+                        if (nativeRows.length) {
+                            rows = nativeRows;
+                            sourceLabel = ' (ישיר מהטלפון)';
+                        }
+                    } catch (nativeError) {
+                        console.error(nativeError);
                     }
                 }
+
+                if (!rows.length) {
+                    rows = await fetchJson(`/api/station-board/${station.id}?upcoming=1&minutes=${minutes}&fast=1`);
+                }
+
                 boardRowsRaw = Array.isArray(rows) ? rows : [];
                 boardStationCurrent = station;
                 applyBoardFilter();
