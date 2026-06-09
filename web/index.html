@@ -903,7 +903,7 @@
             container.hidden = false;
             list.innerHTML = items.map((item, idx) => `
                 <button type="button" class="recent-search-chip" data-recent-index="${idx}">
-                    <span class="recent-route">${item.to_name} ← ${item.from_name}</span>
+                    <span class="recent-route">${item.from_name} ← ${item.to_name}</span>
                 </button>
             `).join('');
 
