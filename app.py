@@ -434,11 +434,20 @@ def get_station_name(sid, raw_name=None):
 
     if sid in STATION_MAP:
         return STATION_MAP[sid]
+
+    try:
+        gtfs_payload = _load_gtfs_fallback_data()
+        gtfs_stop = (gtfs_payload or {}).get("stops", {}).get(sid_str)
+        if gtfs_stop and gtfs_stop.get("name"):
+            return gtfs_stop["name"]
+    except Exception:
+        pass
+
     return raw_name if raw_name else sid_str
 
 
 def _load_all_stations():
-    stations = []
+    stations_by_id = {}
     try:
         from israelrailapi.stations import STATIONS
 
@@ -449,18 +458,37 @@ def _load_all_stations():
             heb = info.get("Heb")
             eng = info.get("Eng")
             display_name = heb or eng or str(sid_int)
-            stations.append(
-                {
-                    "id": sid_int,
-                    "name": display_name,
-                    "heb": heb,
-                    "eng": eng,
-                }
-            )
+            stations_by_id[sid_int] = {
+                "id": sid_int,
+                "name": display_name,
+                "heb": heb,
+                "eng": eng,
+            }
     except Exception:
         for sid, name in STATION_MAP.items():
-            stations.append({"id": sid, "name": name, "heb": None, "eng": name})
+            stations_by_id[sid] = {"id": sid, "name": name, "heb": None, "eng": name}
 
+    gtfs_payload = _load_gtfs_fallback_data()
+    if gtfs_payload:
+        for sid, info in (gtfs_payload.get("stops") or {}).items():
+            try:
+                sid_int = int(sid)
+            except (TypeError, ValueError):
+                continue
+            if sid_int in stations_by_id or not isinstance(info, dict):
+                continue
+
+            name = info.get("name") or str(sid_int)
+            code = info.get("code")
+            stations_by_id[sid_int] = {
+                "id": sid_int,
+                "name": name,
+                "heb": name if _has_hebrew_text(name) else None,
+                "eng": None,
+                "code": code,
+            }
+
+    stations = list(stations_by_id.values())
     stations.sort(key=lambda s: (s["name"] or "").lower())
     return stations
 
@@ -604,6 +632,10 @@ def _is_rail_forbidden_error(exc):
     return "403" in message and "searchTrain" in message
 
 
+def _is_missing_station_error(exc):
+    return isinstance(exc, KeyError) or "KeyError" in type(exc).__name__
+
+
 def _load_gtfs_fallback_data():
     if _GTFS_FALLBACK_CACHE["loaded"]:
         return _GTFS_FALLBACK_CACHE["data"]
@@ -649,6 +681,8 @@ def _gtfs_station_tokens(value):
 def _resolve_gtfs_station(payload, station_id):
     station_map = payload.get("station_map", {})
     key = str(station_id)
+    if key in (payload.get("stops") or {}):
+        return key
     if key in station_map:
         return station_map[key]
     if key in GTFS_STATION_ID_OVERRIDES:
@@ -948,8 +982,8 @@ def get_routes(from_id, to_id):
             results = _filter_routes_from_request_time(results, date_str, time_str)
         return jsonify([route_to_dict(r) for r in results])
     except Exception as exc:
-        if _is_rail_forbidden_error(exc):
-            app.logger.warning("Primary rail API returned 403, using GTFS fallback")
+        if _is_rail_forbidden_error(exc) or _is_missing_station_error(exc):
+            app.logger.warning("Primary rail API unavailable for this query, using GTFS fallback")
             fallback_routes = _query_routes_gtfs_fallback(
                 from_id,
                 to_id,
