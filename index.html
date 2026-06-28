@@ -198,8 +198,7 @@
         }
 
         function stationLabel(station) {
-            if (station.heb && station.eng) return `${station.heb} | ${station.eng} (${station.id})`;
-            return `${station.name} (${station.id})`;
+            return station.heb || station.name || '';
         }
 
         function parseStationInput(rawValue) {
