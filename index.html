@@ -871,6 +871,30 @@
             localStorage.setItem(RECENT_ROUTE_SEARCHES_KEY, JSON.stringify(items.slice(0, MAX_RECENT_ROUTE_SEARCHES)));
         }
 
+
+        function stationById(stationId) {
+            const key = String(stationId || '');
+            return stations.find(station => String(station.id) === key) || null;
+        }
+
+        function normalizeRecentRouteSearch(search) {
+            const fromStation = stationById(search.from_id);
+            const toStation = stationById(search.to_id);
+            return {
+                ...search,
+                from_name: fromStation ? stationLabel(fromStation) : (search.from_name || search.from_label || ''),
+                to_name: toStation ? stationLabel(toStation) : (search.to_name || search.to_label || ''),
+                from_label: fromStation ? stationLabel(fromStation) : (search.from_name || search.from_label || ''),
+                to_label: toStation ? stationLabel(toStation) : (search.to_name || search.to_label || ''),
+            };
+        }
+
+        function migrateRecentRouteSearches() {
+            const normalized = loadRecentRouteSearches().map(normalizeRecentRouteSearch);
+            saveRecentRouteSearches(normalized);
+            renderRecentRouteSearches();
+        }
+
         function pushRecentRouteSearch(search) {
             const existing = loadRecentRouteSearches();
             const key = `${search.from_id}-${search.to_id}`;
@@ -883,8 +907,9 @@
         }
 
         function applyRecentRouteSearch(search) {
-            document.getElementById('from-input').value = search.from_label;
-            document.getElementById('to-input').value = search.to_label;
+            const normalized = normalizeRecentRouteSearch(search);
+            document.getElementById('from-input').value = normalized.from_label;
+            document.getElementById('to-input').value = normalized.to_label;
             runSearch(false);
         }
 
@@ -1503,6 +1528,7 @@
         initDateTime();
         renderRecentRouteSearches();
         loadStations().then(() => {
+            migrateRecentRouteSearches();
             document.getElementById('search-hint').textContent = 'בחר תחנת מוצא ותחנת יעד כדי להתחיל חיפוש.';
         }).finally(() => {
             hideBootSplash();
