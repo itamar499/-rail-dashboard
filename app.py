@@ -24,6 +24,8 @@ STATION_MAP = {
     9650: "Netivot",
 }
 
+GTFS_ONLY_SEARCH_STATION_IDS = {"51798", "51791", "51789"}
+
 # Broad hub coverage to capture lines quickly without querying every station-to-station pair.
 BOARD_HUBS = [
     # Major line terminals and high-value termini first (better chance before timeout):
@@ -471,6 +473,8 @@ def _load_all_stations():
     gtfs_payload = _load_gtfs_fallback_data()
     if gtfs_payload:
         for sid, info in (gtfs_payload.get("stops") or {}).items():
+            if str(sid) not in GTFS_ONLY_SEARCH_STATION_IDS:
+                continue
             try:
                 sid_int = int(sid)
             except (TypeError, ValueError):
