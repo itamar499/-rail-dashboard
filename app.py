@@ -624,6 +624,7 @@ _GTFS_FALLBACK_CACHE = {"loaded": False, "data": None}
 GTFS_STATION_ID_OVERRIDES = {
     # Israel Railways API station id -> Ministry of Transport GTFS stop_id.
     # Names are not always identical between the two public datasets.
+    "3600": "37360",  # Tel Aviv University / TA University
     "3700": "37358",  # Tel Aviv Savidor Center / Tel Aviv Center
     "4600": "37350",  # Tel Aviv HaShalom / HaShalom
     "4900": "37292",  # Tel Aviv HaHagana
@@ -759,31 +760,9 @@ def _query_routes_gtfs_fallback(from_id, to_id, date_str, time_str, all_day=Fals
     from_name = get_station_name(from_id)
     to_name = get_station_name(to_id)
 
-    routes = []
-    for trip in trips:
-        if not _service_active_on_date(calendar.get(trip.get("svc")), requested_date):
-            continue
-
+    def build_leg(trip, start_idx, end_idx, src_name, dst_name):
         compact_stops = trip.get("stops") or []
-        from_idx = None
-        to_idx = None
-        for idx, stop_row in enumerate(compact_stops):
-            stop_id = stop_row[0]
-            if stop_id == from_station and from_idx is None:
-                from_idx = idx
-            if stop_id == to_station:
-                to_idx = idx
-                if from_idx is not None and to_idx > from_idx:
-                    break
-        if from_idx is None or to_idx is None or to_idx <= from_idx:
-            continue
-
-        dep_seconds = compact_stops[from_idx][2]
-        arr_seconds = compact_stops[to_idx][1]
-        if not all_day and dep_seconds < requested_seconds:
-            continue
-
-        trip_slice = compact_stops[from_idx: to_idx + 1]
+        trip_slice = compact_stops[start_idx: end_idx + 1]
         stops = []
         for idx, (sid, arr_sec, dep_sec) in enumerate(trip_slice):
             stop_name = (stops_by_id.get(sid) or {}).get("name") or sid
@@ -801,33 +780,128 @@ def _query_routes_gtfs_fallback(from_id, to_id, date_str, time_str, all_day=Fals
             if idx == len(trip_slice) - 1:
                 stops[-1]["departure"] = None
 
+        dep_seconds = compact_stops[start_idx][2]
+        arr_seconds = compact_stops[end_idx][1]
         dep_iso = _iso_from_date_and_seconds(requested_date, dep_seconds)
         arr_iso = _iso_from_date_and_seconds(requested_date, arr_seconds)
         train_number = str(trip.get("id", "")).split("_")[0]
 
-        routes.append(
-            {
-                "start_time": dep_iso,
-                "end_time": arr_iso,
-                "trains": [
-                    {
-                        "train_number": train_number or None,
-                        "departure": dep_iso,
-                        "arrival": arr_iso,
-                        "src": from_name,
-                        "dst": to_name,
-                        "platform": None,
-                        "dst_platform": None,
-                        "delay_minutes": None,
-                        "has_realtime": False,
-                        "stops": stops,
-                    }
-                ],
-            }
-        )
+        return {
+            "train_number": train_number or None,
+            "departure": dep_iso,
+            "arrival": arr_iso,
+            "src": src_name,
+            "dst": dst_name,
+            "platform": None,
+            "dst_platform": None,
+            "delay_minutes": None,
+            "has_realtime": False,
+            "stops": stops,
+            "_dep_seconds": dep_seconds,
+            "_arr_seconds": arr_seconds,
+            "_trip_id": trip.get("id"),
+        }
+
+    def route_from_legs(legs):
+        clean_legs = []
+        for leg in legs:
+            clean_leg = dict(leg)
+            clean_leg.pop("_dep_seconds", None)
+            clean_leg.pop("_arr_seconds", None)
+            clean_leg.pop("_trip_id", None)
+            clean_legs.append(clean_leg)
+        start_dt = _parse_iso_datetime(clean_legs[0]["departure"])
+        end_dt = _parse_iso_datetime(clean_legs[-1]["arrival"])
+        duration_minutes = None
+        if start_dt and end_dt:
+            duration_minutes = max(0, round((end_dt - start_dt).total_seconds() / 60))
+        return {
+            "start_time": clean_legs[0]["departure"],
+            "end_time": clean_legs[-1]["arrival"],
+            "duration_minutes": duration_minutes,
+            "trains": clean_legs,
+        }
+
+    def trip_station_indexes(compact_stops):
+        indexes = {}
+        for idx, row in enumerate(compact_stops):
+            indexes.setdefault(row[0], []).append(idx)
+        return indexes
+
+    active_trips = []
+    for trip in trips:
+        if _service_active_on_date(calendar.get(trip.get("svc")), requested_date):
+            active_trips.append(trip)
+
+    routes = []
+    first_legs_by_transfer = {}
+    second_legs_by_transfer = {}
+
+    for trip in active_trips:
+        compact_stops = trip.get("stops") or []
+        station_indexes = trip_station_indexes(compact_stops)
+        from_indexes = station_indexes.get(from_station) or []
+        to_indexes = station_indexes.get(to_station) or []
+        if not from_indexes and not to_indexes:
+            continue
+
+        for from_idx in from_indexes:
+            dep_seconds = compact_stops[from_idx][2]
+            if not all_day and dep_seconds < requested_seconds:
+                continue
+
+            for to_idx in to_indexes:
+                if to_idx > from_idx:
+                    routes.append(route_from_legs([build_leg(trip, from_idx, to_idx, from_name, to_name)]))
+                    break
+
+            for transfer_idx in range(from_idx + 1, len(compact_stops)):
+                transfer_id = compact_stops[transfer_idx][0]
+                if transfer_id == to_station:
+                    continue
+                transfer_name = (stops_by_id.get(transfer_id) or {}).get("name") or transfer_id
+                leg = build_leg(trip, from_idx, transfer_idx, from_name, transfer_name)
+                first_legs_by_transfer.setdefault(transfer_id, []).append(leg)
+
+        for to_idx in to_indexes:
+            for transfer_idx in range(0, to_idx):
+                transfer_id = compact_stops[transfer_idx][0]
+                if transfer_id == from_station:
+                    continue
+                transfer_name = (stops_by_id.get(transfer_id) or {}).get("name") or transfer_id
+                leg = build_leg(trip, transfer_idx, to_idx, transfer_name, to_name)
+                second_legs_by_transfer.setdefault(transfer_id, []).append(leg)
+
+    min_transfer_seconds = 2 * 60
+    max_transfer_seconds = 90 * 60
+    transfer_routes = []
+    for transfer_id, first_legs in first_legs_by_transfer.items():
+        second_legs = second_legs_by_transfer.get(transfer_id) or []
+        second_legs.sort(key=lambda leg: leg["_dep_seconds"])
+        for first_leg in first_legs:
+            for second_leg in second_legs:
+                wait_seconds = second_leg["_dep_seconds"] - first_leg["_arr_seconds"]
+                if wait_seconds < min_transfer_seconds:
+                    continue
+                if wait_seconds > max_transfer_seconds:
+                    break
+                if first_leg["_trip_id"] == second_leg["_trip_id"]:
+                    continue
+                transfer_routes.append(route_from_legs([first_leg, second_leg]))
+                break
+
+    routes.extend(transfer_routes)
 
     routes.sort(key=lambda row: row.get("start_time", ""))
-    return routes[:limit]
+    unique_routes = {}
+    for route in routes:
+        key = (
+            route.get("start_time"),
+            route.get("end_time"),
+            tuple((train.get("train_number"), train.get("departure"), train.get("arrival")) for train in route.get("trains", [])),
+        )
+        unique_routes[key] = route
+    return list(unique_routes.values())[:limit]
 
 
 def _route_unique_key(route):
