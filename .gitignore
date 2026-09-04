@@ -15,3 +15,10 @@ android/app/*.jks
 android/app/*.keystore
 
 android/keystore.properties
+# Local secrets / scrape artifacts
+moovit_cookies.txt
+moovit_headers.txt
+moovit_*.txt
+.tmp_*
+.tmp_*/
+apks/

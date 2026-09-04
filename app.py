@@ -24,8 +24,6 @@ STATION_MAP = {
     9650: "Netivot",
 }
 
-GTFS_ONLY_SEARCH_STATION_IDS = {"51798", "51791", "51789"}
-
 # Broad hub coverage to capture lines quickly without querying every station-to-station pair.
 BOARD_HUBS = [
     # Major line terminals and high-value termini first (better chance before timeout):
@@ -41,7 +39,22 @@ BOARD_HUBS = [
 ]
 
 BOARD_CACHE_TTL_SECONDS = 25
+BOARD_CACHE_MAX_ENTRIES = 64
 _BOARD_CACHE = {}
+
+
+def _board_cache_put(cache_key, rows):
+    """Store board rows and bound cache growth by dropping stale slots."""
+    current_slot = cache_key[-1] if isinstance(cache_key, tuple) else 0
+    stale_keys = [
+        key for key in list(_BOARD_CACHE)
+        if isinstance(key, tuple) and len(key) and isinstance(key[-1], int) and key[-1] < current_slot - 2
+    ]
+    for key in stale_keys:
+        _BOARD_CACHE.pop(key, None)
+    _BOARD_CACHE[cache_key] = rows
+    while len(_BOARD_CACHE) > BOARD_CACHE_MAX_ENTRIES:
+        _BOARD_CACHE.pop(next(iter(_BOARD_CACHE)))
 
 
 def _safe_translate_station(station_name):
@@ -152,8 +165,6 @@ def _get_rail_api_key(force_refresh=False):
     env_key = os.environ.get("ISRAEL_RAILWAYS_API_KEY")
     if env_key:
         return env_key
-    if _rail_key_cache["value"]:
-        return _rail_key_cache["value"]
 
     now_ts = time.time()
     if not force_refresh and _rail_key_cache["value"] and _rail_key_cache["expires_at"] > now_ts:
@@ -472,9 +483,8 @@ def _load_all_stations():
 
     gtfs_payload = _load_gtfs_fallback_data()
     if gtfs_payload:
+        # Auto-merge every GTFS rail stop that israelrailapi does not already expose.
         for sid, info in (gtfs_payload.get("stops") or {}).items():
-            if str(sid) not in GTFS_ONLY_SEARCH_STATION_IDS:
-                continue
             try:
                 sid_int = int(sid)
             except (TypeError, ValueError):
@@ -490,6 +500,7 @@ def _load_all_stations():
                 "heb": name if _has_hebrew_text(name) else None,
                 "eng": None,
                 "code": code,
+                "gtfs_only": True,
             }
 
     stations = list(stations_by_id.values())
@@ -728,6 +739,30 @@ def _iso_from_date_and_seconds(base_date, seconds_total):
     return ts.isoformat(timespec="seconds")
 
 
+class GtfsDataExpired(Exception):
+    """Raised when local GTFS compact calendar no longer covers the requested day."""
+
+    def __init__(self, end_date):
+        self.end_date = end_date
+        super().__init__(f"GTFS calendar ended on {end_date}")
+
+
+def _gtfs_calendar_end_ymd(payload):
+    ends = [
+        str(row.get("end"))
+        for row in (payload.get("calendar") or {}).values()
+        if row and row.get("end")
+    ]
+    return max(ends) if ends else None
+
+
+def _gtfs_data_expired(payload, date_obj):
+    end_ymd = _gtfs_calendar_end_ymd(payload)
+    if not end_ymd:
+        return True, None
+    return date_obj.strftime("%Y%m%d") > end_ymd, end_ymd
+
+
 def _service_active_on_date(service_row, date_obj):
     if not service_row:
         return False
@@ -757,6 +792,9 @@ def _query_routes_gtfs_fallback(from_id, to_id, date_str, time_str, all_day=Fals
 
     requested_seconds = _seconds_from_hhmm(time_str)
     requested_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    expired, end_ymd = _gtfs_data_expired(payload, requested_date)
+    if expired:
+        raise GtfsDataExpired(end_ymd or "unknown")
     from_name = get_station_name(from_id)
     to_name = get_station_name(to_id)
 
@@ -1059,16 +1097,37 @@ def get_routes(from_id, to_id):
             results = _query_routes_once(from_id, to_id, date_str, time_str)
             results = _filter_routes_from_request_time(results, date_str, time_str)
         return jsonify([route_to_dict(r) for r in results])
+    except GtfsDataExpired as exc:
+        return jsonify({
+            "error": (
+                "נתוני לוח הזמנים (GTFS) פגו ואינם מכסים את התאריך המבוקש "
+                f"(תוקף עד {exc.end_date}). יש לרענן את assets/rail_gtfs_compact.json."
+            ),
+            "code": "gtfs_expired",
+            "gtfs_end_date": exc.end_date,
+            "details": "GTFS calendar expired",
+        }), 503
     except Exception as exc:
         if _is_rail_forbidden_error(exc) or _is_missing_station_error(exc):
             app.logger.warning("Primary rail API unavailable for this query, using GTFS fallback")
-            fallback_routes = _query_routes_gtfs_fallback(
-                from_id,
-                to_id,
-                date_str,
-                time_str,
-                all_day=all_day,
-            )
+            try:
+                fallback_routes = _query_routes_gtfs_fallback(
+                    from_id,
+                    to_id,
+                    date_str,
+                    time_str,
+                    all_day=all_day,
+                )
+            except GtfsDataExpired as gtfs_exc:
+                return jsonify({
+                    "error": (
+                        "נתוני לוח הזמנים (GTFS) פגו ואינם מכסים את התאריך המבוקש "
+                        f"(תוקף עד {gtfs_exc.end_date}). יש לרענן את assets/rail_gtfs_compact.json."
+                    ),
+                    "code": "gtfs_expired",
+                    "gtfs_end_date": gtfs_exc.end_date,
+                    "details": "GTFS calendar expired",
+                }), 503
             # Never bubble up 403 to the UI when the upstream rail API is blocked.
             # If fallback has no matching trips, return an empty successful result.
             return jsonify(fallback_routes)
@@ -1231,7 +1290,7 @@ def get_station_board(station_id):
 
         rows = list(deduped.values())
         rows.sort(key=lambda x: x["time"])
-        _BOARD_CACHE[cache_key] = rows
+        _board_cache_put(cache_key, rows)
         return jsonify(rows)
     except Exception as exc:
         app.logger.exception("Error in station board query")
